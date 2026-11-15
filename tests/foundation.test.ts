@@ -9,7 +9,7 @@ import {
   hypergeometricProbability,
 } from '../server/modules/math-bridge/client.ts';
 import { db } from '../src/db/index.ts';
-import { users } from '../src/db/schema.ts';
+import { auditLogs, users } from '../src/db/schema.ts';
 import { hashPassword, verifyPassword } from '../src/db/users.ts';
 import { adminAuth } from '../src/lib/firebase-admin.ts';
 
@@ -107,6 +107,7 @@ describe('4. Contratos REST, Segurança, RBAC, Isolamento e Comunicação Node/P
   afterAll(async () => {
     vi.restoreAllMocks();
     for (const uid of createdTestUids) {
+      await db.delete(auditLogs).where(eq(auditLogs.actorUid, uid)).catch(() => undefined);
       await db.delete(users).where(eq(users.uid, uid)).catch(() => undefined);
     }
     if (server) {
@@ -119,7 +120,10 @@ describe('4. Contratos REST, Segurança, RBAC, Isolamento e Comunicação Node/P
   it('GET /api/health e Helmet CSP respondem com segurança sem expor segredos', async () => {
     const res = await fetch(`${baseUrl}/api/health`);
     expect(res.status).toBe(200);
-    expect(res.headers.get('content-security-policy')).toContain("object-src 'none'");
+    const csp = res.headers.get('content-security-policy') ?? '';
+    expect(csp).toContain("object-src 'none'");
+    expect(csp).toContain('https://aistudio.google.com');
+    expect(res.headers.get('x-frame-options')).toBeNull();
 
     const rawText = await res.text();
     expect(rawText).not.toContain('SQL_PASSWORD');

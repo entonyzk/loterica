@@ -1,4 +1,5 @@
-import type { CorsOptions } from 'cors';
+import type { CorsOptions, CorsOptionsDelegate } from 'cors';
+import type { Request } from 'express';
 import type { HelmetOptions } from 'helmet';
 
 export class CorsForbiddenError extends Error {
@@ -14,7 +15,7 @@ export class CorsForbiddenError extends Error {
 export function getAllowedOrigins(isProd: boolean): string[] {
   const configured = (process.env.CORS_ORIGIN ?? '')
     .split(',')
-    .map((o) => o.trim())
+    .map((o) => o.trim().replace(/\/+$/, ''))
     .filter(Boolean);
 
   const appUrl = process.env.APP_URL?.trim();
@@ -37,32 +38,41 @@ export function getAllowedOrigins(isProd: boolean): string[] {
   );
 }
 
-export function buildCorsOptions(isProd: boolean): CorsOptions {
+export function buildCorsOptionsDelegate(isProd: boolean): CorsOptionsDelegate<Request> {
   const allowedOrigins = getAllowedOrigins(isProd);
 
-  return {
-    origin(requestOrigin, callback) {
-      // Requisições same-origin ou server-to-server sem cabeçalho Origin
-      if (!requestOrigin) {
-        return callback(null, true);
-      }
+  return (req, callback) => {
+    const host = req.get('host');
+    const protocol = req.protocol || 'http';
+    const sameOriginHost = host ? [`${protocol}://${host}`, `https://${host}`] : [];
 
-      const normalized = requestOrigin.replace(/\/+$/, '');
-      if (allowedOrigins.includes(normalized)) {
-        return callback(null, true);
-      }
+    const options: CorsOptions = {
+      origin(requestOrigin, originCb) {
+        if (!requestOrigin) {
+          return originCb(null, true);
+        }
 
-      return callback(new CorsForbiddenError(requestOrigin));
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    maxAge: 600,
+        const normalized = requestOrigin.replace(/\/+$/, '');
+        if (allowedOrigins.includes(normalized) || sameOriginHost.includes(normalized)) {
+          return originCb(null, true);
+        }
+
+        return originCb(new CorsForbiddenError(requestOrigin));
+      },
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
+      maxAge: 600,
+    };
+
+    callback(null, options);
   };
 }
 
 export function buildHelmetOptions(isProd: boolean): HelmetOptions {
   return {
+    // Permite exibição segura no iframe do AI Studio e substitui X-Frame-Options por CSP frame-ancestors
+    frameguard: false,
     crossOriginEmbedderPolicy: false,
     crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
     contentSecurityPolicy: {
@@ -70,8 +80,8 @@ export function buildHelmetOptions(isProd: boolean): HelmetOptions {
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: isProd
-          ? ["'self'", 'https://apis.google.com']
-          : ["'self'", "'unsafe-inline'", 'https://apis.google.com'],
+          ? ["'self'", 'https://apis.google.com', 'https://www.gstatic.com']
+          : ["'self'", "'unsafe-inline'", 'https://apis.google.com', 'https://www.gstatic.com'],
         styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
         fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
         imgSrc: ["'self'", 'data:', 'blob:', 'https://*.googleusercontent.com'],
@@ -87,10 +97,12 @@ export function buildHelmetOptions(isProd: boolean): HelmetOptions {
           'https://*.firebaseapp.com',
           'https://accounts.google.com',
         ],
+        manifestSrc: ["'self'"],
         workerSrc: ["'self'", 'blob:'],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
-        frameAncestors: ["'self'"],
+        frameAncestors: ["'self'", 'https://aistudio.google.com', 'https://*.google.com'],
+        ...(isProd ? {} : { upgradeInsecureRequests: null }),
       },
     },
   };

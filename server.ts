@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   CorsForbiddenError,
-  buildCorsOptions,
+  buildCorsOptionsDelegate,
   buildHelmetOptions,
 } from './server/config/security.ts';
 import { adminRouter } from './server/modules/admin/router.ts';
@@ -31,11 +31,11 @@ export function createApp() {
 
   app.set('trust proxy', 1);
 
-  // Segurança HTTP e CSP compatível com React, Google Fonts, Firebase Auth e PWA
+  // Segurança HTTP e CSP compatível com React, Google Fonts, Firebase Auth, PWA e iframe do AI Studio
   app.use(helmet(buildHelmetOptions(isProd)));
 
-  // Política CORS estrita (em produção exige origens autorizadas em CORS_ORIGIN / APP_URL)
-  app.use(cors(buildCorsOptions(isProd)));
+  // Política CORS estrita (aceita same-origin e origens autorizadas em CORS_ORIGIN / APP_URL)
+  app.use(cors(buildCorsOptionsDelegate(isProd)));
 
   app.use(express.json({ limit: '256kb' }));
 

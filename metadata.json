@@ -1,0 +1,8 @@
+{
+  "name": "LOTUS AI",
+  "description": "Plataforma de Inteligência Matemática, Estatística e Simulação de Loterias.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

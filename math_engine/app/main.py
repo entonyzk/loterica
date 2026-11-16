@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI, HTTPException
 from .core.axioms import (
+    DISTRIBUTION_SUM_TOLERANCE,
     INDEPENDENCE_AXIOM_STATEMENT,
     exact_combination_count,
     theoretical_distribution_detailed,
@@ -14,7 +15,7 @@ from .core.contracts import (
 
 app = FastAPI(
     title="LOTUS AI Mathematical Engine",
-    version="0.2.0",
+    version="0.3.0",
     description="Motor matemático científico isolado para cálculo combinatório, estatística, Monte Carlo e backtesting.",
 )
 
@@ -47,11 +48,17 @@ def compute_theoretical_probability(payload: TheoreticalProbabilityRequest):
     dist_formatted = {
         str(h): HitProbabilityDetail(**detail) for h, detail in dist_raw.items()
     }
+    dist_sum = sum(item.probability for item in dist_formatted.values())
 
     return TheoreticalProbabilityResponse(
         lottery_code=payload.lottery_code,
+        universe_size=payload.universe_size,
+        drawn_count=payload.drawn_count,
+        chosen_count=payload.chosen_count,
         total_combinations=str(total),
         distribution_by_hits=dist_formatted,
+        distribution_sum=dist_sum,
+        distribution_sum_tolerance=DISTRIBUTION_SUM_TOLERANCE,
         axiom_notice=INDEPENDENCE_AXIOM_STATEMENT,
         execution_source="python_fastapi_engine",
         engine_status="verified_combinatorics",

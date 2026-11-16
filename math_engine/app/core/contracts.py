@@ -14,6 +14,8 @@ class TheoreticalProbabilityRequest(BaseModel):
 class HitProbabilityDetail(BaseModel):
     hits: int
     probability: float
+    raw_numerator: str
+    raw_denominator: str
     exact_numerator: str
     exact_denominator: str
     scientific_notation: str
@@ -23,8 +25,13 @@ class HitProbabilityDetail(BaseModel):
 
 class TheoreticalProbabilityResponse(BaseModel):
     lottery_code: str
+    universe_size: int
+    drawn_count: int
+    chosen_count: int
     total_combinations: str
     distribution_by_hits: Dict[str, HitProbabilityDetail]
+    distribution_sum: float
+    distribution_sum_tolerance: float
     axiom_notice: str
     execution_source: Literal["python_fastapi_engine"]
     engine_status: Literal["verified_combinatorics"]

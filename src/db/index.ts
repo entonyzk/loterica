@@ -6,13 +6,29 @@ declare global {
   var _postgresPool: Pool | undefined;
 }
 
+export function resolveDatabaseCredentials() {
+  const isTestEnv = process.env.NODE_ENV === 'test';
+  return {
+    host: (isTestEnv ? process.env.TEST_SQL_HOST : undefined) ?? process.env.SQL_HOST,
+    user: (isTestEnv ? process.env.TEST_SQL_USER : undefined) ?? process.env.SQL_USER,
+    password: (isTestEnv ? process.env.TEST_SQL_PASSWORD : undefined) ?? process.env.SQL_PASSWORD,
+    database: (isTestEnv ? process.env.TEST_SQL_DB_NAME : undefined) ?? process.env.SQL_DB_NAME,
+  };
+}
+
+export function hasDatabaseCredentials(): boolean {
+  const creds = resolveDatabaseCredentials();
+  return Boolean(creds.host && creds.user && creds.password && creds.database);
+}
+
 export const createPool = () => {
   if (!global._postgresPool) {
+    const creds = resolveDatabaseCredentials();
     global._postgresPool = new Pool({
-      host: process.env.SQL_HOST,
-      user: process.env.SQL_USER,
-      password: process.env.SQL_PASSWORD,
-      database: process.env.SQL_DB_NAME,
+      host: creds.host,
+      user: creds.user,
+      password: creds.password,
+      database: creds.database,
       max: 10,
       connectionTimeoutMillis: 15000,
     });

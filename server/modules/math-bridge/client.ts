@@ -14,6 +14,8 @@ import { z } from 'zod';
 export const MATHEMATICAL_INDEPENDENCE_AXIOM =
   'Em sorteios justos e independentes, resultados anteriores não alteram a probabilidade matemática dos próximos resultados.';
 
+export const DISTRIBUTION_SUM_TOLERANCE = 1e-9;
+
 export type PrecisionClassification =
   | 'exact'
   | 'exact_rational_with_float_approximation';
@@ -21,6 +23,8 @@ export type PrecisionClassification =
 export interface RationalProbabilityResult {
   hits: number;
   probability: number;
+  rawNumerator: string;
+  rawDenominator: string;
   exactNumerator: string;
   exactDenominator: string;
   scientificNotation: string;
@@ -168,7 +172,7 @@ export function bigIntRatioToScientific(num: bigint, den: bigint, significantDig
 }
 
 /**
- * Probabilidade hipergeométrica detalhada (fração racional exata + float IEEE-754 + notação científica).
+ * Probabilidade hipergeométrica detalhada (fração racional bruta + simplificada + float IEEE-754 + notação científica).
  */
 export function hypergeometricDetail(
   universeSize: number,
@@ -179,6 +183,8 @@ export function hypergeometricDetail(
   validateCombinatorialParams(universeSize, drawnCount, chosenCount);
   assertValidInteger(hits, 'hits');
 
+  const total = exactCombinationsBigInt(universeSize, chosenCount);
+
   const isImpossible =
     hits < 0 ||
     hits > Math.min(drawnCount, chosenCount) ||
@@ -188,6 +194,8 @@ export function hypergeometricDetail(
     return {
       hits,
       probability: 0,
+      rawNumerator: '0',
+      rawDenominator: total.toString(),
       exactNumerator: '0',
       exactDenominator: '1',
       scientificNotation: '0',
@@ -200,7 +208,6 @@ export function hypergeometricDetail(
   const favorable =
     exactCombinationsBigInt(drawnCount, hits) *
     exactCombinationsBigInt(universeSize - drawnCount, chosenCount - hits);
-  const total = exactCombinationsBigInt(universeSize, chosenCount);
 
   const divisor = gcdBigInt(favorable, total);
   const num = favorable / divisor;
@@ -212,6 +219,8 @@ export function hypergeometricDetail(
   return {
     hits,
     probability: prob,
+    rawNumerator: favorable.toString(),
+    rawDenominator: total.toString(),
     exactNumerator: num.toString(),
     exactDenominator: den.toString(),
     scientificNotation: bigIntRatioToScientific(num, den, 8),
@@ -265,7 +274,9 @@ const pythonHealthSchema = z.object({
 
 const pythonHitDetailSchema = z.object({
   hits: z.number().int(),
-  probability: z.number().min(0).max(1),
+  probability: z.number().finite().min(0).max(1),
+  raw_numerator: z.string().regex(/^\d+$/),
+  raw_denominator: z.string().regex(/^\d+$/),
   exact_numerator: z.string().regex(/^\d+$/),
   exact_denominator: z.string().regex(/^\d+$/),
   scientific_notation: z.string(),
@@ -275,12 +286,204 @@ const pythonHitDetailSchema = z.object({
 
 const pythonTheoreticalResponseSchema = z.object({
   lottery_code: z.string(),
+  universe_size: z.number().int().min(1).max(1000),
+  drawn_count: z.number().int().min(0).max(1000),
+  chosen_count: z.number().int().min(0).max(1000),
   total_combinations: z.string().regex(/^\d+$/),
   distribution_by_hits: z.record(z.string(), pythonHitDetailSchema),
+  distribution_sum: z.number().finite(),
+  distribution_sum_tolerance: z.number().positive(),
   axiom_notice: z.string(),
   execution_source: z.literal('python_fastapi_engine'),
   engine_status: z.literal('verified_combinatorics'),
 });
+
+export type PythonTheoreticalResponse = z.infer<typeof pythonTheoreticalResponseSchema>;
+
+/**
+ * Valida a integridade matemática completa da resposta do motor Python FastAPI.
+ * Rejeita qualquer divergência de parâmetros, combinações, numeradores/denominadores ou soma != 1.
+ */
+export function validatePythonTheoreticalIntegrity(
+  params: {
+    lotteryCode: string;
+    universeSize: number;
+    drawnCount: number;
+    chosenCount: number;
+  },
+  data: PythonTheoreticalResponse
+): void {
+  if (data.lottery_code !== params.lotteryCode) {
+    throw new MathEngineError(
+      'MATH_ENGINE_INTEGRITY_ERROR',
+      502,
+      `Divergência de modalidade na resposta Python: esperado "${params.lotteryCode}", recebido "${data.lottery_code}".`
+    );
+  }
+
+  if (
+    data.universe_size !== params.universeSize ||
+    data.drawn_count !== params.drawnCount ||
+    data.chosen_count !== params.chosenCount
+  ) {
+    throw new MathEngineError(
+      'MATH_ENGINE_INTEGRITY_ERROR',
+      502,
+      'Parâmetros ecoados pelo motor Python não correspondem aos parâmetros enviados.'
+    );
+  }
+
+  const expectedTotal = exactCombinationsBigInt(params.universeSize, params.chosenCount);
+  const receivedTotal = BigInt(data.total_combinations);
+  if (receivedTotal !== expectedTotal) {
+    throw new MathEngineError(
+      'MATH_ENGINE_INTEGRITY_ERROR',
+      502,
+      `Total de combinações divergente do esperado C(${params.universeSize}, ${params.chosenCount}).`
+    );
+  }
+
+  const maxHits = Math.min(params.drawnCount, params.chosenCount);
+  const keys = Object.keys(data.distribution_by_hits);
+  if (keys.length !== maxHits + 1) {
+    throw new MathEngineError(
+      'MATH_ENGINE_INTEGRITY_ERROR',
+      502,
+      `Distribuição incompleta: esperadas ${maxHits + 1} faixas de acerto, recebidas ${keys.length}.`
+    );
+  }
+
+  let computedFloatSum = 0;
+  let exactSumNum = 0n;
+  let exactSumDen = 1n;
+
+  for (let h = 0; h <= maxHits; h++) {
+    const detail = data.distribution_by_hits[String(h)];
+    if (!detail || detail.hits !== h) {
+      throw new MathEngineError(
+        'MATH_ENGINE_INTEGRITY_ERROR',
+        502,
+        `Faixa de acertos h=${h} ausente ou inconsistente na resposta Python.`
+      );
+    }
+
+    const expectedImpossible =
+      params.chosenCount - h > params.universeSize - params.drawnCount;
+    if (detail.is_impossible !== expectedImpossible) {
+      throw new MathEngineError(
+        'MATH_ENGINE_INTEGRITY_ERROR',
+        502,
+        `Classificação de evento impossível inconsistente para h=${h}.`
+      );
+    }
+
+    const rawNum = BigInt(detail.raw_numerator);
+    const rawDen = BigInt(detail.raw_denominator);
+    const exactNum = BigInt(detail.exact_numerator);
+    const exactDen = BigInt(detail.exact_denominator);
+
+    if (rawDen !== expectedTotal) {
+      throw new MathEngineError(
+        'MATH_ENGINE_INTEGRITY_ERROR',
+        502,
+        `Denominador bruto inconsistente para h=${h}.`
+      );
+    }
+
+    if (exactDen <= 0n) {
+      throw new MathEngineError(
+        'MATH_ENGINE_INTEGRITY_ERROR',
+        502,
+        `Denominador exato deve ser positivo para h=${h}.`
+      );
+    }
+
+    if (expectedImpossible) {
+      if (
+        detail.probability !== 0 ||
+        rawNum !== 0n ||
+        exactNum !== 0n ||
+        exactDen !== 1n ||
+        detail.precision_classification !== 'exact'
+      ) {
+        throw new MathEngineError(
+          'MATH_ENGINE_INTEGRITY_ERROR',
+          502,
+          `Evento impossível h=${h} deve possuir probabilidade exatamente 0/1.`
+        );
+      }
+    } else {
+      const expectedFavorable =
+        exactCombinationsBigInt(params.drawnCount, h) *
+        exactCombinationsBigInt(params.universeSize - params.drawnCount, params.chosenCount - h);
+
+      if (rawNum !== expectedFavorable) {
+        throw new MathEngineError(
+          'MATH_ENGINE_INTEGRITY_ERROR',
+          502,
+          `Numerador bruto inconsistente para h=${h}.`
+        );
+      }
+
+      if (gcdBigInt(exactNum, exactDen) !== 1n) {
+        throw new MathEngineError(
+          'MATH_ENGINE_INTEGRITY_ERROR',
+          502,
+          `Fração simplificada não é irredutível para h=${h}.`
+        );
+      }
+
+      if (exactNum * expectedTotal !== expectedFavorable * exactDen) {
+        throw new MathEngineError(
+          'MATH_ENGINE_INTEGRITY_ERROR',
+          502,
+          `Fração exata divergente dos casos favoráveis/totais para h=${h}.`
+        );
+      }
+
+      const expectedFloat = bigIntRatioToFloat(exactNum, exactDen);
+      const floatDiff = Math.abs(detail.probability - expectedFloat);
+      const floatTolerance = Math.max(1e-15, Math.abs(expectedFloat) * 1e-9);
+      if (floatDiff > floatTolerance) {
+        throw new MathEngineError(
+          'MATH_ENGINE_INTEGRITY_ERROR',
+          502,
+          `Probabilidade decimal divergente da fração exata para h=${h}.`
+        );
+      }
+    }
+
+    computedFloatSum += detail.probability;
+
+    // Soma racional exata acumulada: exactSumNum/exactSumDen + exactNum/exactDen
+    const combinedNum = exactSumNum * exactDen + exactNum * exactSumDen;
+    const combinedDen = exactSumDen * exactDen;
+    const g = gcdBigInt(combinedNum, combinedDen);
+    exactSumNum = combinedNum / g;
+    exactSumDen = combinedDen / g;
+  }
+
+  if (exactSumNum !== exactSumDen) {
+    throw new MathEngineError(
+      'MATH_ENGINE_INTEGRITY_ERROR',
+      502,
+      'Soma exata das frações racionais da distribuição difere de 1/1.'
+    );
+  }
+
+  const effectiveTolerance = Math.min(data.distribution_sum_tolerance, DISTRIBUTION_SUM_TOLERANCE);
+  if (
+    Math.abs(computedFloatSum - 1.0) > effectiveTolerance ||
+    Math.abs(data.distribution_sum - 1.0) > effectiveTolerance ||
+    Math.abs(computedFloatSum - data.distribution_sum) > effectiveTolerance
+  ) {
+    throw new MathEngineError(
+      'MATH_ENGINE_INTEGRITY_ERROR',
+      502,
+      `Soma da distribuição (${computedFloatSum}) excede tolerância de ${effectiveTolerance} em relação a 1.0.`
+    );
+  }
+}
 
 function resolvePythonBaseUrl(): string {
   const raw = process.env.MATH_ENGINE_URL?.trim();
@@ -438,6 +641,8 @@ export async function requestPythonTheoreticalProbability(params: {
       'Resposta do motor matemático Python não atende ao contrato validado.'
     );
   }
+
+  validatePythonTheoreticalIntegrity(params, parsed.data);
 
   return parsed.data;
 }

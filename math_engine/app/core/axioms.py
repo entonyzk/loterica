@@ -18,12 +18,14 @@ INDEPENDENCE_AXIOM_STATEMENT = (
     "Resultados históricos não alteram a probabilidade combinatória dos próximos sorteios."
 )
 
+DISTRIBUTION_SUM_TOLERANCE = 1e-9
+
 
 def _validate_parameters(universe_size: int, drawn_count: int, chosen_count: int) -> None:
     if not all(isinstance(v, int) and not isinstance(v, bool) for v in (universe_size, drawn_count, chosen_count)):
         raise ValueError("Todos os parâmetros devem ser inteiros válidos.")
-    if universe_size < 1:
-        raise ValueError("universe_size deve ser >= 1.")
+    if universe_size < 1 or universe_size > 1000:
+        raise ValueError("universe_size deve estar no intervalo [1, 1000].")
     if drawn_count < 0 or drawn_count > universe_size:
         raise ValueError("drawn_count deve estar no intervalo [0, universe_size].")
     if chosen_count < 0 or chosen_count > universe_size:
@@ -51,16 +53,21 @@ def hypergeometric_hit_detail(
     hits: int,
 ) -> Dict[str, Any]:
     """
-    Calcula a fração racional exata P(X = h) = num / den e sua aproximação IEEE-754 / Decimal.
+    Calcula a fração racional bruta e simplificada (MDC) para P(X = h),
+    bem como sua aproximação IEEE-754 / Decimal.
     """
     _validate_parameters(universe_size, drawn_count, chosen_count)
     if not isinstance(hits, int) or isinstance(hits, bool):
         raise ValueError("hits deve ser um inteiro.")
 
+    total = comb(universe_size, chosen_count)
+
     if hits < 0 or hits > min(drawn_count, chosen_count) or (chosen_count - hits) > (universe_size - drawn_count):
         return {
             "hits": hits,
             "probability": 0.0,
+            "raw_numerator": "0",
+            "raw_denominator": str(total),
             "exact_numerator": "0",
             "exact_denominator": "1",
             "scientific_notation": "0",
@@ -69,7 +76,6 @@ def hypergeometric_hit_detail(
         }
 
     favorable = comb(drawn_count, hits) * comb(universe_size - drawn_count, chosen_count - hits)
-    total = comb(universe_size, chosen_count)
     divisor = gcd(favorable, total)
     num = favorable // divisor
     den = total // divisor
@@ -81,6 +87,8 @@ def hypergeometric_hit_detail(
     return {
         "hits": hits,
         "probability": prob_float,
+        "raw_numerator": str(favorable),
+        "raw_denominator": str(total),
         "exact_numerator": str(num),
         "exact_denominator": str(den),
         "scientific_notation": f"{dec_val:.8E}",

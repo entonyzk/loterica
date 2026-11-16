@@ -75,6 +75,8 @@ export function bigIntRatioToScientific(num: bigint, den: bigint, significantDig
 export interface DistributionPoint {
   hits: number;
   probability: number;
+  rawNumerator: string;
+  rawDenominator: string;
   exactNumerator: string;
   exactDenominator: string;
   scientificNotation: string;
@@ -98,6 +100,8 @@ export function hypergeometricDetail(
     throw new Error('Parâmetros combinatórios fora dos limites válidos.');
   }
 
+  const total = exactCombinationsBigInt(universeSize, chosenCount);
+
   const isImpossible =
     hits < 0 ||
     hits > Math.min(drawnCount, chosenCount) ||
@@ -107,6 +111,8 @@ export function hypergeometricDetail(
     return {
       hits,
       probability: 0,
+      rawNumerator: '0',
+      rawDenominator: total.toString(),
       exactNumerator: '0',
       exactDenominator: '1',
       scientificNotation: '0',
@@ -119,7 +125,6 @@ export function hypergeometricDetail(
   const favorable =
     exactCombinationsBigInt(drawnCount, hits) *
     exactCombinationsBigInt(universeSize - drawnCount, chosenCount - hits);
-  const total = exactCombinationsBigInt(universeSize, chosenCount);
 
   const divisor = gcdBigInt(favorable, total);
   const num = favorable / divisor;
@@ -131,6 +136,8 @@ export function hypergeometricDetail(
   return {
     hits,
     probability: prob,
+    rawNumerator: favorable.toString(),
+    rawDenominator: total.toString(),
     exactNumerator: num.toString(),
     exactDenominator: den.toString(),
     scientificNotation: bigIntRatioToScientific(num, den, 8),

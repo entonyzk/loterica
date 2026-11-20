@@ -49,9 +49,11 @@ lotteriesRouter.get('/', validateQuery(listQuerySchema), async (req, res) => {
       ruleVersionsCount: allRuleVersions.filter((r) => r.lotteryTypeId === lottery.id).length,
     }));
 
+    const hasVerifiedRules = allRuleVersions.some((r) => r.isVerified);
+
     return res.json({
       stage: 'etapa-1-fundacao',
-      rulesVerified: false,
+      rulesVerified: hasVerifiedRules,
       total: items.length,
       items,
     });

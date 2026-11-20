@@ -7,78 +7,110 @@ import {
   computeLocalTheoreticalDistribution,
   requestPythonTheoreticalProbability,
 } from './client.ts';
-
-export const mathRouter = Router();
+import {
+  type ModalityRuleRepository,
+  ModalityValidationError,
+  postgresModalityRuleRepository,
+  resolveAndValidateTheoreticalInput,
+} from './modality-validator.ts';
 
 const theoreticalRequestSchema = z
   .object({
+    mode: z.enum(['free', 'modality']).optional(),
+    lotteryId: z.number().int().positive().optional(),
     lotteryCode: z.string().trim().min(2).max(64).default('generic-reference'),
-    universeSize: z.number().int().min(1).max(1000),
-    drawnCount: z.number().int().min(0).max(1000),
+    ruleVersionId: z.number().int().positive().optional(),
+    universeSize: z.number().int().min(1).max(1000).optional(),
+    drawnCount: z.number().int().min(0).max(1000).optional(),
     chosenCount: z.number().int().min(0).max(1000),
   })
-  .refine((data) => data.drawnCount <= data.universeSize && data.chosenCount <= data.universeSize, {
-    message: 'drawnCount e chosenCount devem ser menores ou iguais a universeSize.',
-  });
+  .strict();
 
-/**
- * Execução determinística local em Node.js (BigInt exato).
- * Claramente separada do motor científico Python.
- */
-mathRouter.post('/local/theoretical', validateBody(theoreticalRequestSchema), (req, res) => {
-  try {
-    const { lotteryCode, universeSize, drawnCount, chosenCount } = req.body as z.infer<
-      typeof theoreticalRequestSchema
-    >;
-    const result = computeLocalTheoreticalDistribution(universeSize, drawnCount, chosenCount);
-    return res.json({
-      lotteryCode,
-      ...result,
-    });
-  } catch (error) {
-    return res.status(400).json({
-      error: 'COMBINATORIAL_VALIDATION_ERROR',
-      message: error instanceof Error ? error.message : 'Parâmetros inválidos.',
-    });
-  }
-});
+export function createMathRouter(
+  repository: ModalityRuleRepository = postgresModalityRuleRepository
+) {
+  const router = Router();
 
-/**
- * Verificação de saúde do microsserviço Python FastAPI.
- * Retorna 503/504 explícito se offline — nunca simula sucesso.
- */
-mathRouter.get('/python/health', async (_req, res) => {
-  try {
-    const health = await checkPythonEngineHealth();
-    return res.json(health);
-  } catch (error) {
-    if (error instanceof MathEngineError) {
-      return res.status(error.statusCode).json({
-        error: error.code,
-        message: error.message,
-      });
-    }
-    console.error('Unexpected error checking Python engine health:', error);
-    return res.status(503).json({
-      error: 'MATH_ENGINE_UNAVAILABLE',
-      message: 'Falha ao consultar o motor matemático Python.',
-    });
-  }
-});
-
-/**
- * Execução remota via HTTP no microsserviço Python FastAPI (/v1/probabilities/theoretical).
- * Falhas de timeout, indisponibilidade ou contrato inválido retornam erro explícito (sem fallback silencioso).
- */
-mathRouter.post(
-  '/python/theoretical',
-  validateBody(theoreticalRequestSchema),
-  async (req, res) => {
+  /**
+   * Execução determinística local em Node.js (BigInt exato).
+   * Valida estritamente modalidades verificadas ou opera em modo livre independente do catálogo.
+   */
+  router.post('/local/theoretical', validateBody(theoreticalRequestSchema), async (req, res) => {
     try {
       const payload = req.body as z.infer<typeof theoreticalRequestSchema>;
-      const result = await requestPythonTheoreticalProbability(payload);
-      return res.json(result);
+      const validated = await resolveAndValidateTheoreticalInput(payload, repository);
+      const result = computeLocalTheoreticalDistribution(
+        validated.universeSize,
+        validated.drawnCount,
+        validated.chosenCount
+      );
+      return res.json({
+        lotteryCode: validated.lotteryCode,
+        modalityContext: validated.modalityContext,
+        ...result,
+      });
     } catch (error) {
+      if (error instanceof ModalityValidationError) {
+        return res.status(error.statusCode).json({
+          error: error.code,
+          message: error.message,
+        });
+      }
+      return res.status(400).json({
+        error: 'COMBINATORIAL_VALIDATION_ERROR',
+        message: error instanceof Error ? error.message : 'Parâmetros inválidos.',
+      });
+    }
+  });
+
+  /**
+   * Verificação de saúde do microsserviço Python FastAPI.
+   * Retorna 503/504 explícito se offline — nunca simula sucesso.
+   */
+  router.get('/python/health', async (_req, res) => {
+    try {
+      const health = await checkPythonEngineHealth();
+      return res.json(health);
+    } catch (error) {
+      if (error instanceof MathEngineError) {
+        return res.status(error.statusCode).json({
+          error: error.code,
+          message: error.message,
+        });
+      }
+      console.error('Unexpected error checking Python engine health:', error);
+      return res.status(503).json({
+        error: 'MATH_ENGINE_UNAVAILABLE',
+        message: 'Falha ao consultar o motor matemático Python.',
+      });
+    }
+  });
+
+  /**
+   * Execução remota via HTTP no microsserviço Python FastAPI (/v1/probabilities/theoretical).
+   * Valida modalidade/regra verificada antes da chamada remota e rejeita qualquer inconsistência Python.
+   */
+  router.post('/python/theoretical', validateBody(theoreticalRequestSchema), async (req, res) => {
+    try {
+      const payload = req.body as z.infer<typeof theoreticalRequestSchema>;
+      const validated = await resolveAndValidateTheoreticalInput(payload, repository);
+      const result = await requestPythonTheoreticalProbability({
+        lotteryCode: validated.lotteryCode,
+        universeSize: validated.universeSize,
+        drawnCount: validated.drawnCount,
+        chosenCount: validated.chosenCount,
+      });
+      return res.json({
+        ...result,
+        modalityContext: validated.modalityContext,
+      });
+    } catch (error) {
+      if (error instanceof ModalityValidationError) {
+        return res.status(error.statusCode).json({
+          error: error.code,
+          message: error.message,
+        });
+      }
       if (error instanceof MathEngineError) {
         return res.status(error.statusCode).json({
           error: error.code,
@@ -91,5 +123,9 @@ mathRouter.post(
         message: 'Falha de comunicação com o motor matemático Python.',
       });
     }
-  }
-);
+  });
+
+  return router;
+}
+
+export const mathRouter = createMathRouter();

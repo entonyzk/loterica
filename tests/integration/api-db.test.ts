@@ -3,13 +3,14 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../server.ts';
 import { db, hasDatabaseCredentials } from '../../src/db/index.ts';
-import { auditLogs, users } from '../../src/db/schema.ts';
+import { auditLogs, lotteryRuleVersions, lotteryTypes, users } from '../../src/db/schema.ts';
 import { adminAuth } from '../../src/lib/firebase-admin.ts';
 
 describe('Integração — PostgreSQL (Cloud SQL / TEST_SQL_*) e Autenticação Firebase + RBAC', () => {
   let server: http.Server;
   let baseUrl = '';
   const createdTestUids: string[] = [];
+  const createdTestLotteryIds: number[] = [];
 
   beforeAll(async () => {
     if (!hasDatabaseCredentials()) {
@@ -30,6 +31,9 @@ describe('Integração — PostgreSQL (Cloud SQL / TEST_SQL_*) e Autenticação 
 
   afterAll(async () => {
     vi.restoreAllMocks();
+    for (const lid of createdTestLotteryIds) {
+      await db.delete(lotteryTypes).where(eq(lotteryTypes.id, lid)).catch(() => undefined);
+    }
     for (const uid of createdTestUids) {
       await db.delete(auditLogs).where(eq(auditLogs.actorUid, uid)).catch(() => undefined);
       await db.delete(users).where(eq(users.uid, uid)).catch(() => undefined);
@@ -64,6 +68,112 @@ describe('Integração — PostgreSQL (Cloud SQL / TEST_SQL_*) e Autenticação 
     expect(contestsRes.status).toBe(200);
     const contestsJson = await contestsRes.json();
     expect(contestsJson.hasVerifiedSourceData).toBe(false);
+  });
+
+  it('valida regras verificadas no PostgreSQL para cálculos por modalidade e bloqueia parâmetros arbitrários', async () => {
+    // 1. Modalidade da Etapa 1 sem regra verificada (mega-sena) rejeita cálculo por modalidade com 409
+    const awaitingRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryCode: 'mega-sena',
+        universeSize: 60,
+        drawnCount: 6,
+        chosenCount: 6,
+      }),
+    });
+    expect(awaitingRes.status).toBe(409);
+    expect((await awaitingRes.json()).error).toBe('MODALITY_AWAITING_CONFIGURATION');
+
+    // 2. Modo Parâmetros Livres continua operando independentemente do catálogo
+    const freeRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'free',
+        lotteryCode: 'generic-reference',
+        universeSize: 20,
+        drawnCount: 4,
+        chosenCount: 4,
+      }),
+    });
+    expect(freeRes.status).toBe(200);
+    expect((await freeRes.json()).modalityContext.mode).toBe('free');
+
+    // 3. Cria modalidade e versão de regra verificada temporária no banco para validar vínculo estrito
+    const testCode = `homolog-ref-${Date.now()}`;
+    const [insertedLottery] = await db
+      .insert(lotteryTypes)
+      .values({
+        name: 'Modalidade Teste Homologação',
+        code: testCode,
+        description: 'Registro temporário isolado de teste de integração.',
+        status: 'active',
+      })
+      .returning();
+
+    createdTestLotteryIds.push(insertedLottery.id);
+
+    const [insertedRule] = await db
+      .insert(lotteryRuleVersions)
+      .values({
+        lotteryTypeId: insertedLottery.id,
+        versionNumber: 1,
+        minNumbersToChoose: 5,
+        maxNumbersToChoose: 7,
+        numberUniverseMin: 1,
+        numberUniverseMax: 25,
+        drawnNumbersCount: 5,
+        validFrom: new Date('2026-01-01T00:00:00Z'),
+        officialSource: 'Fonte de Homologação Automatizada',
+        isVerified: true,
+        isLocked: false,
+      })
+      .returning();
+
+    // Parâmetros arbitrários rejeitados
+    const wrongUniverse = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: insertedLottery.id,
+        lotteryCode: testCode,
+        ruleVersionId: insertedRule.id,
+        universeSize: 30,
+        drawnCount: 5,
+        chosenCount: 5,
+      }),
+    });
+    expect(wrongUniverse.status).toBe(400);
+    expect((await wrongUniverse.json()).error).toBe('MODALITY_PARAMETER_MISMATCH');
+
+    // Execução válida com todos os identificadores e limites oficiais verificados
+    const validRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: insertedLottery.id,
+        lotteryCode: testCode,
+        ruleVersionId: insertedRule.id,
+        universeSize: 25,
+        drawnCount: 5,
+        chosenCount: 6,
+      }),
+    });
+    expect(validRes.status).toBe(200);
+    const validJson = await validRes.json();
+    expect(validJson.totalCombinations).toBe('177100'); // C(25, 6)
+    expect(validJson.modalityContext).toMatchObject({
+      mode: 'modality',
+      lotteryId: insertedLottery.id,
+      lotteryCode: testCode,
+      ruleVersionId: insertedRule.id,
+      ruleVersionNumber: 1,
+      isVerified: true,
+    });
   });
 
   it('valida autenticação Firebase, RBAC administrativo e isolamento estrito entre contas no banco', async () => {

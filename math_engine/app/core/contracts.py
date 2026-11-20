@@ -1,14 +1,28 @@
-"""Contratos Pydantic para o Motor Matemático LOTUS AI."""
+"""Contratos Pydantic estritos para o Motor Matemático LOTUS AI."""
 
 from typing import Any, Dict, Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
 
 
 class TheoreticalProbabilityRequest(BaseModel):
-    lottery_code: str = Field(..., min_length=2)
-    universe_size: int = Field(..., ge=1, le=1000)
-    drawn_count: int = Field(..., ge=0, le=1000)
-    chosen_count: int = Field(..., ge=0, le=1000)
+    model_config = ConfigDict(extra="forbid")
+
+    lottery_code: StrictStr = Field(..., min_length=2, max_length=64)
+    universe_size: StrictInt = Field(..., ge=1, le=1000)
+    drawn_count: StrictInt = Field(..., ge=0, le=1000)
+    chosen_count: StrictInt = Field(..., ge=0, le=1000)
+
+    @model_validator(mode="after")
+    def validate_mathematical_bounds(self) -> "TheoreticalProbabilityRequest":
+        cleaned_code = self.lottery_code.strip()
+        if len(cleaned_code) < 2:
+            raise ValueError("lottery_code deve conter ao menos 2 caracteres válidos.")
+        self.lottery_code = cleaned_code
+        if self.drawn_count > self.universe_size:
+            raise ValueError("drawn_count deve ser <= universe_size.")
+        if self.chosen_count > self.universe_size:
+            raise ValueError("chosen_count deve ser <= universe_size.")
+        return self
 
 
 class HitProbabilityDetail(BaseModel):

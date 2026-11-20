@@ -166,3 +166,44 @@ def test_fastapi_contracts():
         },
     )
     assert bad_res.status_code == 422
+
+    for invalid_payload in [
+        {"lottery_code": "generic-reference", "universe_size": True, "drawn_count": 5, "chosen_count": 5},
+        {"lottery_code": "generic-reference", "universe_size": 50, "drawn_count": False, "chosen_count": 5},
+        {"lottery_code": "generic-reference", "universe_size": 60.0, "drawn_count": 6, "chosen_count": 6},
+        {"lottery_code": "generic-reference", "universe_size": 60, "drawn_count": 6.5, "chosen_count": 6},
+        {"lottery_code": "generic-reference", "universe_size": 60, "drawn_count": -1, "chosen_count": 6},
+        {"lottery_code": "generic-reference", "universe_size": 60, "drawn_count": 6, "chosen_count": -2},
+        {"lottery_code": "generic-reference", "universe_size": 1001, "drawn_count": 6, "chosen_count": 6},
+        {"lottery_code": "generic-reference", "universe_size": 0, "drawn_count": 0, "chosen_count": 0},
+        {"lottery_code": "generic-reference", "universe_size": 50, "drawn_count": 5, "chosen_count": 51},
+    ]:
+        strict_res = client.post("/v1/probabilities/theoretical", json=invalid_payload)
+        assert strict_res.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "invalid_payload",
+    [
+        {"lottery_code": "generic-reference", "universe_size": True, "drawn_count": 5, "chosen_count": 5},
+        {"lottery_code": "generic-reference", "universe_size": 50, "drawn_count": False, "chosen_count": 5},
+        {"lottery_code": "generic-reference", "universe_size": 50, "drawn_count": 5, "chosen_count": True},
+        {"lottery_code": "generic-reference", "universe_size": 60.0, "drawn_count": 6, "chosen_count": 6},
+        {"lottery_code": "generic-reference", "universe_size": 60, "drawn_count": 6.25, "chosen_count": 6},
+        {"lottery_code": "generic-reference", "universe_size": -60, "drawn_count": 6, "chosen_count": 6},
+        {"lottery_code": "generic-reference", "universe_size": 60, "drawn_count": -1, "chosen_count": 6},
+        {"lottery_code": "generic-reference", "universe_size": 60, "drawn_count": 6, "chosen_count": -1},
+        {"lottery_code": "generic-reference", "universe_size": 1001, "drawn_count": 6, "chosen_count": 6},
+        {"lottery_code": "generic-reference", "universe_size": 20, "drawn_count": 21, "chosen_count": 6},
+        {"lottery_code": "generic-reference", "universe_size": 20, "drawn_count": 6, "chosen_count": 21},
+        {"lottery_code": "   ", "universe_size": 50, "drawn_count": 5, "chosen_count": 5},
+        {"lottery_code": "generic-reference", "universe_size": 50, "drawn_count": 5, "chosen_count": 5, "extra": 1},
+    ],
+)
+def test_pydantic_strict_validation_rejects_invalid_types_and_bounds(invalid_payload):
+    pydantic = pytest.importorskip("pydantic")
+    from app.core.contracts import TheoreticalProbabilityRequest
+
+    with pytest.raises(pydantic.ValidationError):
+        TheoreticalProbabilityRequest(**invalid_payload)
+

@@ -149,7 +149,9 @@ export function buildOpenApiSpec() {
           'x-lotus-status': 'implemented',
           responses: {
             '200': { description: 'Distribuição racional exata e aproximação IEEE-754' },
-            '400': { description: 'Parâmetros combinatórios inválidos' },
+            '400': { description: 'Parâmetros combinatórios ou vínculo de modalidade inválidos' },
+            '404': { description: 'Modalidade ou versão de regra não encontrada' },
+            '409': { description: 'Modalidade aguardando configuração de regras oficiais verificadas' },
           },
         },
       },
@@ -170,7 +172,10 @@ export function buildOpenApiSpec() {
           'x-lotus-status': 'implemented',
           responses: {
             '200': { description: 'Resultado validado do motor Python' },
-            '502': { description: 'Resposta inválida do motor Python' },
+            '400': { description: 'Parâmetros combinatórios ou vínculo de modalidade inválidos' },
+            '404': { description: 'Modalidade ou versão de regra não encontrada' },
+            '409': { description: 'Modalidade aguardando configuração de regras oficiais verificadas' },
+            '502': { description: 'Resposta inválida ou inconsistente do motor Python' },
             '503': { description: 'Motor Python indisponível' },
             '504': { description: 'Timeout do motor Python' },
           },

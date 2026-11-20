@@ -194,10 +194,6 @@ export const MathLabView: React.FC = () => {
   const safeChosen = Math.min(Math.max(minChosenLimit, chosenCount), maxChosenLimit);
 
   const modalityAwaitingRules = mode === 'modality' && !activeVerifiedRule;
-  const activeLotteryCode =
-    mode === 'modality' && selectedLotteryDetail
-      ? selectedLotteryDetail.code
-      : 'generic-reference';
 
   const totalCombinations = useMemo(
     () => exactCombinationsBigInt(universeSize, safeChosen),
@@ -265,17 +261,32 @@ export const MathLabView: React.FC = () => {
   };
 
   const handleTestPythonEngine = async () => {
+    if (modalityAwaitingRules) return;
     setPythonState({ status: 'loading' });
     try {
+      const requestBody =
+        mode === 'modality' && selectedLotteryDetail && activeVerifiedRule
+          ? {
+              mode: 'modality' as const,
+              lotteryId: selectedLotteryDetail.id,
+              lotteryCode: selectedLotteryDetail.code,
+              ruleVersionId: activeVerifiedRule.id,
+              universeSize,
+              drawnCount: safeDrawn,
+              chosenCount: safeChosen,
+            }
+          : {
+              mode: 'free' as const,
+              lotteryCode: 'generic-reference',
+              universeSize,
+              drawnCount: safeDrawn,
+              chosenCount: safeChosen,
+            };
+
       const response = await fetch('/api/math/python/theoretical', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          lotteryCode: activeLotteryCode,
-          universeSize,
-          drawnCount: safeDrawn,
-          chosenCount: safeChosen,
-        }),
+        body: JSON.stringify(requestBody),
       });
       const payload = await response.json();
       if (!response.ok) {
@@ -374,9 +385,11 @@ export const MathLabView: React.FC = () => {
             </div>
             {selectedLotteryDetail && (
               <span className="font-mono-tabular text-xs text-neutral-400">
-                Código: {selectedLotteryDetail.code} · Status:{' '}
+                ID #{selectedLotteryDetail.id} · Código: {selectedLotteryDetail.code} · Status:{' '}
                 <span className="text-[#E5C158]">
-                  {activeVerifiedRule ? 'Regra verificada ativa' : 'Aguardando configuração'}
+                  {activeVerifiedRule
+                    ? `Regra verificada ativa (ID #${activeVerifiedRule.id})`
+                    : 'Aguardando configuração'}
                 </span>
               </span>
             )}
@@ -414,7 +427,7 @@ export const MathLabView: React.FC = () => {
                 ) : activeVerifiedRule ? (
                   <div className="rounded-lg border border-[#D4AF37]/30 bg-[#0A0B0E] px-4 py-3 text-xs text-neutral-300">
                     <span className="font-medium text-[#E5C158]">
-                      Regra v{activeVerifiedRule.versionNumber} carregada automaticamente:
+                      Regra v{activeVerifiedRule.versionNumber} (ID #{activeVerifiedRule.id}) carregada automaticamente:
                     </span>{' '}
                     Universo [{activeVerifiedRule.numberUniverseMin}..{activeVerifiedRule.numberUniverseMax}] (N=
                     {universeSize}) · Sorteio k={activeVerifiedRule.drawnNumbersCount} · Escolha m ∈ [
@@ -459,8 +472,8 @@ export const MathLabView: React.FC = () => {
               </div>
               <input
                 type="range"
-                min={10}
-                max={100}
+                min={mode === 'modality' && activeVerifiedRule ? Math.min(10, universeSize) : 10}
+                max={mode === 'modality' && activeVerifiedRule ? Math.max(100, universeSize) : 100}
                 disabled={mode === 'modality' && Boolean(activeVerifiedRule)}
                 value={universeSize}
                 onChange={(e) => setUniverseSize(Number(e.target.value))}
@@ -475,8 +488,12 @@ export const MathLabView: React.FC = () => {
               </div>
               <input
                 type="range"
-                min={2}
-                max={Math.min(20, universeSize)}
+                min={mode === 'modality' && activeVerifiedRule ? Math.min(2, safeDrawn) : 2}
+                max={
+                  mode === 'modality' && activeVerifiedRule
+                    ? Math.max(20, safeDrawn)
+                    : Math.min(20, universeSize)
+                }
                 disabled={mode === 'modality' && Boolean(activeVerifiedRule)}
                 value={safeDrawn}
                 onChange={(e) => setDrawnCount(Number(e.target.value))}

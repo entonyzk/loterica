@@ -165,9 +165,27 @@ describe('Unitários UI — Responsividade e Laboratório Matemático', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: 'Por Modalidade' }));
     expect(
-      await screen.findByText(/Regra v1 carregada automaticamente:/i)
+      await screen.findByText(/Regra v1 \(ID #10\) carregada automaticamente:/i)
     ).toBeInTheDocument();
     const combinationsMatches = await screen.findAllByText('50.063.860');
     expect(combinationsMatches.length).toBeGreaterThan(0);
+
+    // Aciona motor Python e verifica envio dos identificadores estritos da modalidade
+    fireEvent.click(screen.getByRole('button', { name: /Executar via Motor Python/i }));
+    const fetchMock = vi.mocked(globalThis.fetch);
+    const pythonCall = fetchMock.mock.calls.find(
+      ([url]) => typeof url === 'string' && url.includes('/api/math/python/theoretical')
+    );
+    expect(pythonCall).toBeDefined();
+    const sentBody = JSON.parse(String((pythonCall![1] as RequestInit).body));
+    expect(sentBody).toMatchObject({
+      mode: 'modality',
+      lotteryId: 1,
+      lotteryCode: 'mega-sena',
+      ruleVersionId: 10,
+      universeSize: 60,
+      drawnCount: 6,
+      chosenCount: 6,
+    });
   });
 });

@@ -8,7 +8,8 @@ import {
   hypergeometricDetail,
   hypergeometricProbability,
 } from '../../server/modules/math-bridge/client.ts';
-import { mathRouter } from '../../server/modules/math-bridge/router.ts';
+import type { ModalityRuleRepository } from '../../server/modules/math-bridge/modality-validator.ts';
+import { createMathRouter } from '../../server/modules/math-bridge/router.ts';
 import { hashPassword, verifyPassword } from '../../src/db/users.ts';
 
 function buildFullValidPythonPayload(params: {
@@ -132,9 +133,67 @@ describe('Unitários — 3. Validação Matemática e Resiliência da Ponte Node
   let baseUrl = '';
 
   beforeAll(async () => {
+    const mockRepo: ModalityRuleRepository = {
+      async findLotteryById(id) {
+        if (id === 1) {
+          return { id: 1, code: 'mega-sena', name: 'Mega-Sena', status: 'active' };
+        }
+        if (id === 2) {
+          return { id: 2, code: 'quina', name: 'Quina', status: 'awaiting_rules' };
+        }
+        return null;
+      },
+      async findLotteryByCode(code) {
+        if (code === 'mega-sena') {
+          return { id: 1, code: 'mega-sena', name: 'Mega-Sena', status: 'active' };
+        }
+        if (code === 'quina') {
+          return { id: 2, code: 'quina', name: 'Quina', status: 'awaiting_rules' };
+        }
+        return null;
+      },
+      async findRuleVersionsByLotteryId(lotteryTypeId) {
+        if (lotteryTypeId === 1) {
+          return [
+            {
+              id: 10,
+              lotteryTypeId: 1,
+              versionNumber: 1,
+              minNumbersToChoose: 6,
+              maxNumbersToChoose: 15,
+              numberUniverseMin: 1,
+              numberUniverseMax: 60,
+              drawnNumbersCount: 6,
+              officialSource: 'Regra de Referência Unitária',
+              isVerified: true,
+              isLocked: false,
+              validFrom: new Date('2026-01-01T00:00:00Z'),
+              validTo: null,
+            },
+            {
+              id: 11,
+              lotteryTypeId: 1,
+              versionNumber: 2,
+              minNumbersToChoose: 6,
+              maxNumbersToChoose: 20,
+              numberUniverseMin: 1,
+              numberUniverseMax: 60,
+              drawnNumbersCount: 6,
+              officialSource: 'Rascunho não verificado',
+              isVerified: false,
+              isLocked: false,
+              validFrom: new Date('2026-06-01T00:00:00Z'),
+              validTo: null,
+            },
+          ];
+        }
+        return [];
+      },
+    };
+
     const app = express();
     app.use(express.json());
-    app.use('/api/math', mathRouter);
+    app.use('/api/math', createMathRouter(mockRepo));
 
     await new Promise<void>((resolve) => {
       appServer = app.listen(0, '127.0.0.1', () => {
@@ -312,5 +371,142 @@ describe('Unitários — 3. Validação Matemática e Resiliência da Ponte Node
         await new Promise<void>((r) => pythonStub.close(() => r()));
       }
     }
+  });
+
+  it('valida estritamente código, ID, versão de regra verificada, universo, sorteio e limites de dezenas vs. modo livre', async () => {
+    // 1. Modo Parâmetros Livres funciona independentemente do catálogo
+    const freeOk = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'free',
+        lotteryCode: 'generic-reference',
+        universeSize: 30,
+        drawnCount: 4,
+        chosenCount: 4,
+      }),
+    });
+    expect(freeOk.status).toBe(200);
+    const freeJson = await freeOk.json();
+    expect(freeJson.modalityContext.mode).toBe('free');
+    expect(freeJson.totalCombinations).toBe('27405');
+
+    // 2. Modo livre não pode se passar por modalidade do catálogo
+    const freeConflict = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'free',
+        lotteryCode: 'mega-sena',
+        universeSize: 60,
+        drawnCount: 6,
+        chosenCount: 6,
+      }),
+    });
+    expect(freeConflict.status).toBe(400);
+    expect((await freeConflict.json()).error).toBe('MODALITY_MODE_CONFLICT');
+
+    // 3. Modalidade aguardando configuração (sem regra verificada) -> 409 explícito
+    const awaitingRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: 2,
+        lotteryCode: 'quina',
+        universeSize: 80,
+        drawnCount: 5,
+        chosenCount: 5,
+      }),
+    });
+    expect(awaitingRes.status).toBe(409);
+    expect((await awaitingRes.json()).error).toBe('MODALITY_AWAITING_CONFIGURATION');
+
+    // 4. Divergência entre ID e código -> 400 MODALITY_MISMATCH
+    const mismatchRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: 1,
+        lotteryCode: 'quina',
+        chosenCount: 6,
+      }),
+    });
+    expect(mismatchRes.status).toBe(400);
+    expect((await mismatchRes.json()).error).toBe('MODALITY_MISMATCH');
+
+    // 5. Versão de regra não verificada explicitada -> 409 MODALITY_AWAITING_CONFIGURATION
+    const unverifiedRuleRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: 1,
+        lotteryCode: 'mega-sena',
+        ruleVersionId: 11,
+        chosenCount: 6,
+      }),
+    });
+    expect(unverifiedRuleRes.status).toBe(409);
+    expect((await unverifiedRuleRes.json()).error).toBe('MODALITY_AWAITING_CONFIGURATION');
+
+    // 6. Parâmetros arbitrários para modalidade -> 400 MODALITY_PARAMETER_MISMATCH
+    const arbitraryParamsRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: 1,
+        lotteryCode: 'mega-sena',
+        ruleVersionId: 10,
+        universeSize: 55,
+        drawnCount: 6,
+        chosenCount: 6,
+      }),
+    });
+    expect(arbitraryParamsRes.status).toBe(400);
+    expect((await arbitraryParamsRes.json()).error).toBe('MODALITY_PARAMETER_MISMATCH');
+
+    // 7. Dezenas escolhidas fora dos limites da regra [6..15] -> 400 MODALITY_CHOSEN_OUT_OF_RANGE
+    const outOfRangeRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: 1,
+        lotteryCode: 'mega-sena',
+        ruleVersionId: 10,
+        chosenCount: 5,
+      }),
+    });
+    expect(outOfRangeRes.status).toBe(400);
+    expect((await outOfRangeRes.json()).error).toBe('MODALITY_CHOSEN_OUT_OF_RANGE');
+
+    // 8. Regra verificada com todos os campos consistentes -> 200 com modalityContext validado
+    const validModalityRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: 1,
+        lotteryCode: 'mega-sena',
+        ruleVersionId: 10,
+        universeSize: 60,
+        drawnCount: 6,
+        chosenCount: 6,
+      }),
+    });
+    expect(validModalityRes.status).toBe(200);
+    const validJson = await validModalityRes.json();
+    expect(validJson.totalCombinations).toBe('50063860');
+    expect(validJson.modalityContext).toMatchObject({
+      mode: 'modality',
+      lotteryId: 1,
+      lotteryCode: 'mega-sena',
+      ruleVersionId: 10,
+      ruleVersionNumber: 1,
+      isVerified: true,
+    });
   });
 });

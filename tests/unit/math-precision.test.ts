@@ -141,6 +141,9 @@ describe('Unitários — 3. Validação Matemática e Resiliência da Ponte Node
         if (id === 2) {
           return { id: 2, code: 'quina', name: 'Quina', status: 'awaiting_rules' };
         }
+        if (id === 3) {
+          return { id: 3, code: 'future-only', name: 'Modalidade Futura', status: 'configured' };
+        }
         return null;
       },
       async findLotteryByCode(code) {
@@ -150,11 +153,29 @@ describe('Unitários — 3. Validação Matemática e Resiliência da Ponte Node
         if (code === 'quina') {
           return { id: 2, code: 'quina', name: 'Quina', status: 'awaiting_rules' };
         }
+        if (code === 'future-only') {
+          return { id: 3, code: 'future-only', name: 'Modalidade Futura', status: 'configured' };
+        }
         return null;
       },
       async findRuleVersionsByLotteryId(lotteryTypeId) {
         if (lotteryTypeId === 1) {
           return [
+            {
+              id: 9,
+              lotteryTypeId: 1,
+              versionNumber: 0,
+              minNumbersToChoose: 6,
+              maxNumbersToChoose: 12,
+              numberUniverseMin: 1,
+              numberUniverseMax: 50,
+              drawnNumbersCount: 5,
+              officialSource: 'Regra Histórica Expirada',
+              isVerified: true,
+              isLocked: true,
+              validFrom: new Date('2018-01-01T00:00:00Z'),
+              validTo: new Date('2025-12-31T23:59:59Z'),
+            },
             {
               id: 10,
               lotteryTypeId: 1,
@@ -185,9 +206,69 @@ describe('Unitários — 3. Validação Matemática e Resiliência da Ponte Node
               validFrom: new Date('2026-06-01T00:00:00Z'),
               validTo: null,
             },
+            {
+              id: 12,
+              lotteryTypeId: 1,
+              versionNumber: 3,
+              minNumbersToChoose: 6,
+              maxNumbersToChoose: 18,
+              numberUniverseMin: 1,
+              numberUniverseMax: 60,
+              drawnNumbersCount: 6,
+              officialSource: 'Regra Verificada Futura',
+              isVerified: true,
+              isLocked: false,
+              validFrom: new Date('2099-01-01T00:00:00Z'),
+              validTo: null,
+            },
+          ];
+        }
+        if (lotteryTypeId === 3) {
+          return [
+            {
+              id: 30,
+              lotteryTypeId: 3,
+              versionNumber: 1,
+              minNumbersToChoose: 5,
+              maxNumbersToChoose: 10,
+              numberUniverseMin: 1,
+              numberUniverseMax: 50,
+              drawnNumbersCount: 5,
+              officialSource: 'Regra apenas futura',
+              isVerified: true,
+              isLocked: false,
+              validFrom: new Date('2099-01-01T00:00:00Z'),
+              validTo: null,
+            },
           ];
         }
         return [];
+      },
+      async findContestById(id) {
+        if (id === 501) {
+          return {
+            id: 501,
+            lotteryTypeId: 1,
+            ruleVersionId: 9,
+            contestNumber: 1200,
+            drawDate: new Date('2021-07-15T20:00:00Z'),
+            status: 'verified',
+          };
+        }
+        return null;
+      },
+      async findContestByLotteryAndNumber(lotteryTypeId, contestNumber) {
+        if (lotteryTypeId === 1 && contestNumber === 1200) {
+          return {
+            id: 501,
+            lotteryTypeId: 1,
+            ruleVersionId: 9,
+            contestNumber: 1200,
+            drawDate: new Date('2021-07-15T20:00:00Z'),
+            status: 'verified',
+          };
+        }
+        return null;
       },
     };
 
@@ -507,6 +588,113 @@ describe('Unitários — 3. Validação Matemática e Resiliência da Ponte Node
       ruleVersionId: 10,
       ruleVersionNumber: 1,
       isVerified: true,
+    });
+  });
+
+  it('aplica vigência temporal (validFrom/validTo), bloqueia regras futuras ou expiradas e resolve concurso histórico', async () => {
+    // 1. Sem ruleVersionId explícito no cálculo atual -> ignora expirada (#9), futura (#12) e não verificada (#11), selecionando #10
+    const autoCurrent = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: 1,
+        lotteryCode: 'mega-sena',
+        chosenCount: 6,
+      }),
+    });
+    expect(autoCurrent.status).toBe(200);
+    const autoJson = await autoCurrent.json();
+    expect(autoJson.modalityContext.ruleVersionId).toBe(10);
+    expect(autoJson.modalityContext.referenceSource).toBe('current_timestamp');
+    expect(typeof autoJson.modalityContext.referenceDate).toBe('string');
+
+    // 2. Regra futura explícita para cálculo atual -> 409 RULE_VERSION_FUTURE
+    const futureRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: 1,
+        lotteryCode: 'mega-sena',
+        ruleVersionId: 12,
+        chosenCount: 6,
+      }),
+    });
+    expect(futureRes.status).toBe(409);
+    expect((await futureRes.json()).error).toBe('RULE_VERSION_FUTURE');
+
+    // 3. Regra expirada explícita para cálculo atual -> 409 RULE_VERSION_EXPIRED
+    const expiredRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: 1,
+        lotteryCode: 'mega-sena',
+        ruleVersionId: 9,
+        chosenCount: 6,
+      }),
+    });
+    expect(expiredRes.status).toBe(409);
+    expect((await expiredRes.json()).error).toBe('RULE_VERSION_EXPIRED');
+
+    // 4. Modalidade que possui apenas regra futura -> 409 RULE_NOT_EFFECTIVE_AT_DATE
+    const futureOnlyRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: 3,
+        lotteryCode: 'future-only',
+        chosenCount: 5,
+      }),
+    });
+    expect(futureOnlyRes.status).toBe(409);
+    expect((await futureOnlyRes.json()).error).toBe('RULE_NOT_EFFECTIVE_AT_DATE');
+
+    // 5. Cálculo com data histórica de referência (2021) -> seleciona regra #9 (N=50, k=5) e registra referenceDate
+    const historicalDateRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: 1,
+        lotteryCode: 'mega-sena',
+        referenceDate: '2021-07-15T20:00:00.000Z',
+        chosenCount: 6,
+      }),
+    });
+    expect(historicalDateRes.status).toBe(200);
+    const histDateJson = await historicalDateRes.json();
+    expect(histDateJson.modalityContext).toMatchObject({
+      ruleVersionId: 9,
+      universeSize: 50,
+      drawnCount: 5,
+      referenceSource: 'explicit_reference_date',
+      referenceDate: '2021-07-15T20:00:00.000Z',
+    });
+
+    // 6. Cálculo vinculado a concurso histórico (#501 / concurso 1200) -> identifica regra #9 vigente na drawDate
+    const contestRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: 1,
+        lotteryCode: 'mega-sena',
+        contestId: 501,
+        chosenCount: 6,
+      }),
+    });
+    expect(contestRes.status).toBe(200);
+    const contestJson = await contestRes.json();
+    expect(contestJson.modalityContext).toMatchObject({
+      ruleVersionId: 9,
+      contestId: 501,
+      contestNumber: 1200,
+      referenceSource: 'historical_contest',
+      referenceDate: '2021-07-15T20:00:00.000Z',
     });
   });
 });

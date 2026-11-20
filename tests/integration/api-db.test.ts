@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../server.ts';
 import { db, hasDatabaseCredentials } from '../../src/db/index.ts';
-import { auditLogs, lotteryRuleVersions, lotteryTypes, users } from '../../src/db/schema.ts';
+import { auditLogs, contests, lotteryRuleVersions, lotteryTypes, users } from '../../src/db/schema.ts';
 import { adminAuth } from '../../src/lib/firebase-admin.ts';
 
 describe('Integração — PostgreSQL (Cloud SQL / TEST_SQL_*) e Autenticação Firebase + RBAC', () => {
@@ -32,6 +32,7 @@ describe('Integração — PostgreSQL (Cloud SQL / TEST_SQL_*) e Autenticação 
   afterAll(async () => {
     vi.restoreAllMocks();
     for (const lid of createdTestLotteryIds) {
+      await db.delete(contests).where(eq(contests.lotteryTypeId, lid)).catch(() => undefined);
       await db.delete(lotteryTypes).where(eq(lotteryTypes.id, lid)).catch(() => undefined);
     }
     for (const uid of createdTestUids) {
@@ -115,7 +116,7 @@ describe('Integração — PostgreSQL (Cloud SQL / TEST_SQL_*) e Autenticação 
 
     createdTestLotteryIds.push(insertedLottery.id);
 
-    const [insertedRule] = await db
+    const [expiredRule] = await db
       .insert(lotteryRuleVersions)
       .values({
         lotteryTypeId: insertedLottery.id,
@@ -123,14 +124,125 @@ describe('Integração — PostgreSQL (Cloud SQL / TEST_SQL_*) e Autenticação 
         minNumbersToChoose: 5,
         maxNumbersToChoose: 7,
         numberUniverseMin: 1,
+        numberUniverseMax: 20,
+        drawnNumbersCount: 5,
+        validFrom: new Date('2019-01-01T00:00:00Z'),
+        validTo: new Date('2024-12-31T23:59:59Z'),
+        officialSource: 'Fonte Histórica Expirada',
+        isVerified: true,
+        isLocked: true,
+      })
+      .returning();
+
+    const [insertedRule] = await db
+      .insert(lotteryRuleVersions)
+      .values({
+        lotteryTypeId: insertedLottery.id,
+        versionNumber: 2,
+        minNumbersToChoose: 5,
+        maxNumbersToChoose: 7,
+        numberUniverseMin: 1,
         numberUniverseMax: 25,
         drawnNumbersCount: 5,
-        validFrom: new Date('2026-01-01T00:00:00Z'),
+        validFrom: new Date('2025-01-01T00:00:00Z'),
+        validTo: null,
         officialSource: 'Fonte de Homologação Automatizada',
         isVerified: true,
         isLocked: false,
       })
       .returning();
+
+    const [futureRule] = await db
+      .insert(lotteryRuleVersions)
+      .values({
+        lotteryTypeId: insertedLottery.id,
+        versionNumber: 3,
+        minNumbersToChoose: 5,
+        maxNumbersToChoose: 8,
+        numberUniverseMin: 1,
+        numberUniverseMax: 30,
+        drawnNumbersCount: 5,
+        validFrom: new Date('2099-01-01T00:00:00Z'),
+        validTo: null,
+        officialSource: 'Fonte Futura Homologação',
+        isVerified: true,
+        isLocked: false,
+      })
+      .returning();
+
+    const [historicalContest] = await db
+      .insert(contests)
+      .values({
+        lotteryTypeId: insertedLottery.id,
+        ruleVersionId: expiredRule.id,
+        contestNumber: 100,
+        drawDate: new Date('2021-06-15T20:00:00Z'),
+        status: 'verified',
+      })
+      .returning();
+
+    // GET /api/lotteries/:id deve selecionar apenas v2 atualmente e v1 para data histórica 2021
+    const detailNowRes = await fetch(`${baseUrl}/api/lotteries/${insertedLottery.id}`);
+    expect(detailNowRes.status).toBe(200);
+    expect((await detailNowRes.json()).activeRuleVersionId).toBe(insertedRule.id);
+
+    const detailHistRes = await fetch(
+      `${baseUrl}/api/lotteries/${insertedLottery.id}?referenceDate=2021-06-15T20:00:00.000Z`
+    );
+    expect(detailHistRes.status).toBe(200);
+    expect((await detailHistRes.json()).activeRuleVersionId).toBe(expiredRule.id);
+
+    // Regra futura explícita no cálculo atual -> 409 RULE_VERSION_FUTURE
+    const futureRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: insertedLottery.id,
+        lotteryCode: testCode,
+        ruleVersionId: futureRule.id,
+        chosenCount: 5,
+      }),
+    });
+    expect(futureRes.status).toBe(409);
+    expect((await futureRes.json()).error).toBe('RULE_VERSION_FUTURE');
+
+    // Regra expirada explícita no cálculo atual -> 409 RULE_VERSION_EXPIRED
+    const expiredRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: insertedLottery.id,
+        lotteryCode: testCode,
+        ruleVersionId: expiredRule.id,
+        chosenCount: 5,
+      }),
+    });
+    expect(expiredRes.status).toBe(409);
+    expect((await expiredRes.json()).error).toBe('RULE_VERSION_EXPIRED');
+
+    // Concurso histórico no banco seleciona automaticamente expiredRule (v1) vigente em 2021
+    const contestCalcRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryId: insertedLottery.id,
+        lotteryCode: testCode,
+        contestId: historicalContest.id,
+        chosenCount: 5,
+      }),
+    });
+    expect(contestCalcRes.status).toBe(200);
+    const contestCalcJson = await contestCalcRes.json();
+    expect(contestCalcJson.totalCombinations).toBe('15504'); // C(20, 5)
+    expect(contestCalcJson.modalityContext).toMatchObject({
+      ruleVersionId: expiredRule.id,
+      contestId: historicalContest.id,
+      contestNumber: 100,
+      referenceSource: 'historical_contest',
+    });
 
     // Parâmetros arbitrários rejeitados
     const wrongUniverse = await fetch(`${baseUrl}/api/math/local/theoretical`, {
@@ -171,7 +283,7 @@ describe('Integração — PostgreSQL (Cloud SQL / TEST_SQL_*) e Autenticação 
       lotteryId: insertedLottery.id,
       lotteryCode: testCode,
       ruleVersionId: insertedRule.id,
-      ruleVersionNumber: 1,
+      ruleVersionNumber: 2,
       isVerified: true,
     });
   });

@@ -5,6 +5,10 @@ import {
   exactCombinationsBigInt,
   hypergeometricDetail,
 } from './combinatorics';
+import {
+  classifyRuleTemporalStatus,
+  selectActiveVerifiedRuleVersion,
+} from './rule-validity';
 
 interface PythonExecutionState {
   status: 'idle' | 'loading' | 'success' | 'error';
@@ -12,6 +16,7 @@ interface PythonExecutionState {
   totalCombinations?: string;
   executionSource?: string;
   distributionSum?: number;
+  referenceDate?: string;
 }
 
 interface LotterySummaryItem {
@@ -42,7 +47,17 @@ interface LotteryDetailResponse extends LotterySummaryItem {
   ruleVersions: RuleVersionItem[];
 }
 
+interface ContestReferenceItem {
+  id: number;
+  lotteryTypeId: number;
+  ruleVersionId: number | null;
+  contestNumber: number;
+  drawDate: string | null;
+  status: string;
+}
+
 type CalculationMode = 'free' | 'modality';
+type ReferenceMode = 'current' | 'date' | 'contest';
 
 function formatBigIntPtBr(value: string): string {
   try {
@@ -60,7 +75,7 @@ export const MathLabView: React.FC = () => {
   const [drawnCount, setDrawnCount] = useState(5);
   const [chosenCount, setChosenCount] = useState(5);
 
-  // Estrutura para modalidades reais
+  // Estrutura para modalidades reais e vigência temporal
   const [lotteries, setLotteries] = useState<LotterySummaryItem[]>([]);
   const [lotteriesLoading, setLotteriesLoading] = useState(false);
   const [lotteriesError, setLotteriesError] = useState<string | null>(null);
@@ -68,6 +83,13 @@ export const MathLabView: React.FC = () => {
   const [selectedLotteryDetail, setSelectedLotteryDetail] =
     useState<LotteryDetailResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  const [referenceMode, setReferenceMode] = useState<ReferenceMode>('current');
+  const [customReferenceDate, setCustomReferenceDate] = useState(() =>
+    new Date().toISOString().slice(0, 10)
+  );
+  const [contests, setContests] = useState<ContestReferenceItem[]>([]);
+  const [selectedContestId, setSelectedContestId] = useState<number | null>(null);
 
   // Linha expandida de detalhes matemáticos (por quantidade de acertos h)
   const [expandedHits, setExpandedHits] = useState<Record<number, boolean>>({});
@@ -138,31 +160,86 @@ export const MathLabView: React.FC = () => {
     };
   }, [selectedLotteryId]);
 
+  // Carrega concursos históricos (quando disponíveis) ao trocar modalidade
+  useEffect(() => {
+    if (selectedLotteryId == null) {
+      setContests([]);
+      setSelectedContestId(null);
+      return;
+    }
+    let active = true;
+    const loadContests = async () => {
+      try {
+        const res = await fetch(`/api/contests?lotteryId=${selectedLotteryId}&limit=50`);
+        if (!res.ok) return;
+        const data = (await res.json()) as { items?: ContestReferenceItem[] };
+        if (!active) return;
+        const list = Array.isArray(data.items) ? data.items : [];
+        setContests(list);
+        setSelectedContestId(list[0]?.id ?? null);
+      } catch {
+        if (!active) return;
+        setContests([]);
+        setSelectedContestId(null);
+      }
+    };
+    void loadContests();
+    return () => {
+      active = false;
+    };
+  }, [selectedLotteryId]);
+
+  const selectedContest = useMemo(
+    () => contests.find((c) => c.id === selectedContestId) ?? null,
+    [contests, selectedContestId]
+  );
+
+  const effectiveReferenceDate = useMemo(() => {
+    if (referenceMode === 'contest' && selectedContest?.drawDate) {
+      const parsed = new Date(selectedContest.drawDate);
+      if (!Number.isNaN(parsed.getTime())) return parsed;
+    }
+    if (referenceMode === 'date' && customReferenceDate) {
+      const isoCandidate = customReferenceDate.includes('T')
+        ? customReferenceDate
+        : `${customReferenceDate}T12:00:00.000Z`;
+      const parsed = new Date(isoCandidate);
+      if (!Number.isNaN(parsed.getTime())) return parsed;
+    }
+    return new Date();
+  }, [referenceMode, selectedContest, customReferenceDate, selectedLotteryId]);
+
   const activeVerifiedRule = useMemo(() => {
     if (!selectedLotteryDetail?.ruleVersions) return null;
-    return (
-      selectedLotteryDetail.ruleVersions.find(
-        (rule) =>
-          rule.isVerified &&
-          rule.validTo === null &&
-          rule.numberUniverseMin !== null &&
-          rule.numberUniverseMax !== null &&
-          rule.drawnNumbersCount !== null &&
-          rule.minNumbersToChoose !== null &&
-          rule.maxNumbersToChoose !== null
-      ) ??
-      selectedLotteryDetail.ruleVersions.find(
-        (rule) =>
-          rule.isVerified &&
-          rule.numberUniverseMin !== null &&
-          rule.numberUniverseMax !== null &&
-          rule.drawnNumbersCount !== null &&
-          rule.minNumbersToChoose !== null &&
-          rule.maxNumbersToChoose !== null
-      ) ??
-      null
+    if (referenceMode === 'contest' && selectedContest?.ruleVersionId != null) {
+      const linked = selectedLotteryDetail.ruleVersions.find(
+        (r) => r.id === selectedContest.ruleVersionId
+      );
+      if (
+        linked &&
+        classifyRuleTemporalStatus(linked, effectiveReferenceDate) === 'active'
+      ) {
+        return linked;
+      }
+      return null;
+    }
+    return selectActiveVerifiedRuleVersion(
+      selectedLotteryDetail.ruleVersions,
+      effectiveReferenceDate
     );
-  }, [selectedLotteryDetail]);
+  }, [selectedLotteryDetail, effectiveReferenceDate, referenceMode, selectedContest]);
+
+  const temporalDiagnostic = useMemo(() => {
+    const versions = selectedLotteryDetail?.ruleVersions ?? [];
+    const verifiedCount = versions.filter((r) => r.isVerified).length;
+    const futureCount = versions.filter(
+      (r) => classifyRuleTemporalStatus(r, effectiveReferenceDate) === 'future'
+    ).length;
+    const expiredCount = versions.filter(
+      (r) => classifyRuleTemporalStatus(r, effectiveReferenceDate) === 'expired'
+    ).length;
+    return { total: versions.length, verifiedCount, futureCount, expiredCount };
+  }, [selectedLotteryDetail, effectiveReferenceDate]);
 
   // Carregamento automático dos parâmetros quando houver regra verificada no modo modalidade
   useEffect(() => {
@@ -271,6 +348,13 @@ export const MathLabView: React.FC = () => {
               lotteryId: selectedLotteryDetail.id,
               lotteryCode: selectedLotteryDetail.code,
               ruleVersionId: activeVerifiedRule.id,
+              ...(referenceMode === 'contest' && selectedContest
+                ? {
+                    contestId: selectedContest.id,
+                    contestNumber: selectedContest.contestNumber,
+                  }
+                : {}),
+              referenceDate: effectiveReferenceDate.toISOString(),
               universeSize,
               drawnCount: safeDrawn,
               chosenCount: safeChosen,
@@ -301,6 +385,7 @@ export const MathLabView: React.FC = () => {
         totalCombinations: payload.total_combinations,
         executionSource: payload.execution_source,
         distributionSum: payload.distribution_sum,
+        referenceDate: payload.modalityContext?.referenceDate ?? effectiveReferenceDate.toISOString(),
       });
     } catch (err) {
       setPythonState({
@@ -404,35 +489,102 @@ export const MathLabView: React.FC = () => {
               Nenhuma modalidade encontrada no catálogo. Utilize o modo Parâmetros Livres.
             </p>
           ) : (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-12 md:items-end">
-              <label className="block md:col-span-5">
-                <span className="block text-xs text-neutral-300 mb-1.5">Modalidade</span>
-                <select
-                  aria-label="Selecionar modalidade"
-                  value={selectedLotteryId ?? ''}
-                  onChange={(e) => setSelectedLotteryId(Number(e.target.value))}
-                  className="w-full rounded-lg border border-white/12 bg-[#0A0B0E] px-3 py-2.5 text-xs text-[#F1F2F4] focus:border-[#D4AF37] focus:outline-none"
-                >
-                  {lotteries.map((lot) => (
-                    <option key={lot.id} value={lot.id}>
-                      {lot.name} ({lot.status === 'awaiting_rules' ? 'aguardando configuração' : lot.status})
-                    </option>
-                  ))}
-                </select>
-              </label>
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-12 md:items-end">
+                <label className="block md:col-span-5">
+                  <span className="block text-xs text-neutral-300 mb-1.5">Modalidade</span>
+                  <select
+                    aria-label="Selecionar modalidade"
+                    value={selectedLotteryId ?? ''}
+                    onChange={(e) => setSelectedLotteryId(Number(e.target.value))}
+                    className="w-full rounded-lg border border-white/12 bg-[#0A0B0E] px-3 py-2.5 text-xs text-[#F1F2F4] focus:border-[#D4AF37] focus:outline-none"
+                  >
+                    {lotteries.map((lot) => (
+                      <option key={lot.id} value={lot.id}>
+                        {lot.name} ({lot.status === 'awaiting_rules' ? 'aguardando configuração' : lot.status})
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-              <div className="md:col-span-7">
+                <label className="block md:col-span-4">
+                  <span className="block text-xs text-neutral-300 mb-1.5">
+                    Referência Temporal da Regra
+                  </span>
+                  <select
+                    aria-label="Referência temporal da regra"
+                    value={referenceMode}
+                    onChange={(e) => setReferenceMode(e.target.value as ReferenceMode)}
+                    className="w-full rounded-lg border border-white/12 bg-[#0A0B0E] px-3 py-2.5 text-xs text-[#F1F2F4] focus:border-[#D4AF37] focus:outline-none"
+                  >
+                    <option value="current">Vigência Atual</option>
+                    <option value="date">Data Histórica de Referência</option>
+                    <option value="contest" disabled={contests.length === 0}>
+                      Concurso Histórico ({contests.length})
+                    </option>
+                  </select>
+                </label>
+
+                {referenceMode === 'date' && (
+                  <label className="block md:col-span-3">
+                    <span className="block text-xs text-neutral-300 mb-1.5">Data de Referência</span>
+                    <input
+                      type="date"
+                      aria-label="Data de referência da regra"
+                      value={customReferenceDate}
+                      onChange={(e) => setCustomReferenceDate(e.target.value)}
+                      className="w-full rounded-lg border border-white/12 bg-[#0A0B0E] px-3 py-2 text-xs text-[#F1F2F4] focus:border-[#D4AF37] focus:outline-none"
+                    />
+                  </label>
+                )}
+
+                {referenceMode === 'contest' && contests.length > 0 && (
+                  <label className="block md:col-span-3">
+                    <span className="block text-xs text-neutral-300 mb-1.5">Concurso</span>
+                    <select
+                      aria-label="Selecionar concurso histórico"
+                      value={selectedContestId ?? ''}
+                      onChange={(e) => setSelectedContestId(Number(e.target.value))}
+                      className="w-full rounded-lg border border-white/12 bg-[#0A0B0E] px-3 py-2.5 text-xs text-[#F1F2F4] focus:border-[#D4AF37] focus:outline-none"
+                    >
+                      {contests.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          Concurso {c.contestNumber}
+                          {c.drawDate ? ` (${c.drawDate.slice(0, 10)})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+              </div>
+
+              <div>
                 {detailLoading ? (
                   <p className="text-xs text-neutral-400">Verificando versões de regras...</p>
                 ) : activeVerifiedRule ? (
-                  <div className="rounded-lg border border-[#D4AF37]/30 bg-[#0A0B0E] px-4 py-3 text-xs text-neutral-300">
-                    <span className="font-medium text-[#E5C158]">
-                      Regra v{activeVerifiedRule.versionNumber} (ID #{activeVerifiedRule.id}) carregada automaticamente:
+                  <div className="rounded-lg border border-[#D4AF37]/30 bg-[#0A0B0E] px-4 py-3 text-xs text-neutral-300 space-y-1">
+                    <div>
+                      <span className="font-medium text-[#E5C158]">
+                        Regra v{activeVerifiedRule.versionNumber} (ID #{activeVerifiedRule.id}) carregada automaticamente:
+                      </span>{' '}
+                      Universo [{activeVerifiedRule.numberUniverseMin}..{activeVerifiedRule.numberUniverseMax}] (N=
+                      {universeSize}) · Sorteio k={activeVerifiedRule.drawnNumbersCount} · Escolha m ∈ [
+                      {activeVerifiedRule.minNumbersToChoose}..{activeVerifiedRule.maxNumbersToChoose}] · Fonte:{' '}
+                      {activeVerifiedRule.officialSource}
+                    </div>
+                    <div className="font-mono-tabular text-[11px] text-neutral-400">
+                      Vigência: {activeVerifiedRule.validFrom.slice(0, 10)} até{' '}
+                      {activeVerifiedRule.validTo ? activeVerifiedRule.validTo.slice(0, 10) : 'vigência aberta'} ·
+                      Data de referência: {effectiveReferenceDate.toISOString().slice(0, 10)}
+                    </div>
+                  </div>
+                ) : temporalDiagnostic.verifiedCount > 0 ? (
+                  <div className="rounded-lg border border-amber-400/25 bg-[#0A0B0E] px-4 py-3 text-xs leading-relaxed text-amber-200/90">
+                    <span className="font-semibold text-amber-300">
+                      Nenhuma regra verificada vigente na data de referência ({effectiveReferenceDate.toISOString().slice(0, 10)}):
                     </span>{' '}
-                    Universo [{activeVerifiedRule.numberUniverseMin}..{activeVerifiedRule.numberUniverseMax}] (N=
-                    {universeSize}) · Sorteio k={activeVerifiedRule.drawnNumbersCount} · Escolha m ∈ [
-                    {activeVerifiedRule.minNumbersToChoose}..{activeVerifiedRule.maxNumbersToChoose}] · Fonte:{' '}
-                    {activeVerifiedRule.officialSource}
+                    regras com vigência futura ({temporalDiagnostic.futureCount}) ou expirada ({temporalDiagnostic.expiredCount})
+                    não são aplicadas. Selecione uma data/concurso dentro da vigência oficial ou use Parâmetros Livres.
                   </div>
                 ) : (
                   <div className="rounded-lg border border-amber-400/25 bg-[#0A0B0E] px-4 py-3 text-xs leading-relaxed text-amber-200/90">

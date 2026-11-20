@@ -1,6 +1,11 @@
-import { asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import { db } from '../../../src/db/index.ts';
-import { lotteryRuleVersions, lotteryTypes } from '../../../src/db/schema.ts';
+import { contests, lotteryRuleVersions, lotteryTypes } from '../../../src/db/schema.ts';
+import {
+  classifyRuleTemporalStatus,
+  hasCompleteRuleParameters,
+  selectActiveVerifiedRuleVersion,
+} from '../../../src/modules/probabilities/rule-validity.ts';
 
 export interface ModalityRecord {
   id: number;
@@ -25,10 +30,24 @@ export interface ModalityRuleVersionRecord {
   validTo: Date | null;
 }
 
+export interface ContestReferenceRecord {
+  id: number;
+  lotteryTypeId: number;
+  ruleVersionId: number | null;
+  contestNumber: number;
+  drawDate: Date | null;
+  status: string;
+}
+
 export interface ModalityRuleRepository {
   findLotteryById(id: number): Promise<ModalityRecord | null>;
   findLotteryByCode(code: string): Promise<ModalityRecord | null>;
   findRuleVersionsByLotteryId(lotteryTypeId: number): Promise<ModalityRuleVersionRecord[]>;
+  findContestById?(id: number): Promise<ContestReferenceRecord | null>;
+  findContestByLotteryAndNumber?(
+    lotteryTypeId: number,
+    contestNumber: number
+  ): Promise<ContestReferenceRecord | null>;
 }
 
 export const postgresModalityRuleRepository: ModalityRuleRepository = {
@@ -81,6 +100,43 @@ export const postgresModalityRuleRepository: ModalityRuleRepository = {
       .where(eq(lotteryRuleVersions.lotteryTypeId, lotteryTypeId))
       .orderBy(desc(lotteryRuleVersions.versionNumber), asc(lotteryRuleVersions.id));
   },
+
+  async findContestById(id: number) {
+    const rows = await db
+      .select({
+        id: contests.id,
+        lotteryTypeId: contests.lotteryTypeId,
+        ruleVersionId: contests.ruleVersionId,
+        contestNumber: contests.contestNumber,
+        drawDate: contests.drawDate,
+        status: contests.status,
+      })
+      .from(contests)
+      .where(eq(contests.id, id))
+      .limit(1);
+    return rows[0] ?? null;
+  },
+
+  async findContestByLotteryAndNumber(lotteryTypeId: number, contestNumber: number) {
+    const rows = await db
+      .select({
+        id: contests.id,
+        lotteryTypeId: contests.lotteryTypeId,
+        ruleVersionId: contests.ruleVersionId,
+        contestNumber: contests.contestNumber,
+        drawDate: contests.drawDate,
+        status: contests.status,
+      })
+      .from(contests)
+      .where(
+        and(
+          eq(contests.lotteryTypeId, lotteryTypeId),
+          eq(contests.contestNumber, contestNumber)
+        )
+      )
+      .limit(1);
+    return rows[0] ?? null;
+  },
 };
 
 export class ModalityValidationError extends Error {
@@ -95,11 +151,19 @@ export class ModalityValidationError extends Error {
   }
 }
 
+export type ReferenceDateSource =
+  | 'current_timestamp'
+  | 'explicit_reference_date'
+  | 'historical_contest';
+
 export interface TheoreticalInputPayload {
   mode?: 'free' | 'modality';
   lotteryId?: number;
   lotteryCode: string;
   ruleVersionId?: number;
+  contestId?: number;
+  contestNumber?: number;
+  referenceDate?: string;
   universeSize?: number;
   drawnCount?: number;
   chosenCount: number;
@@ -115,6 +179,7 @@ export interface ValidatedTheoreticalExecution {
     | {
         mode: 'free';
         rulesVerified: false;
+        referenceDate: string;
       }
     | {
         mode: 'modality';
@@ -123,6 +188,12 @@ export interface ValidatedTheoreticalExecution {
         lotteryName: string;
         ruleVersionId: number;
         ruleVersionNumber: number;
+        ruleValidFrom: string;
+        ruleValidTo: string | null;
+        referenceDate: string;
+        referenceSource: ReferenceDateSource;
+        contestId: number | null;
+        contestNumber: number | null;
         universeMin: number;
         universeMax: number;
         universeSize: number;
@@ -135,14 +206,16 @@ export interface ValidatedTheoreticalExecution {
       };
 }
 
-function hasCompleteMathematicalRule(rule: ModalityRuleVersionRecord): boolean {
-  return (
-    rule.numberUniverseMin !== null &&
-    rule.numberUniverseMax !== null &&
-    rule.drawnNumbersCount !== null &&
-    rule.minNumbersToChoose !== null &&
-    rule.maxNumbersToChoose !== null
-  );
+function parseExplicitReferenceDate(raw: string): Date {
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new ModalityValidationError(
+      'INVALID_REFERENCE_DATE',
+      400,
+      `Data de referência inválida: "${raw}". Utilize formato ISO-8601 válido.`
+    );
+  }
+  return parsed;
 }
 
 export async function resolveAndValidateTheoreticalInput(
@@ -151,13 +224,17 @@ export async function resolveAndValidateTheoreticalInput(
 ): Promise<ValidatedTheoreticalExecution> {
   const hasExplicitLotteryCode = input.lotteryCode !== 'generic-reference';
   const hasModalityIdentifiers =
-    input.lotteryId !== undefined || input.ruleVersionId !== undefined || hasExplicitLotteryCode;
+    input.lotteryId !== undefined ||
+    input.ruleVersionId !== undefined ||
+    input.contestId !== undefined ||
+    input.contestNumber !== undefined ||
+    hasExplicitLotteryCode;
 
   if (input.mode === 'free' && hasModalityIdentifiers) {
     throw new ModalityValidationError(
       'MODALITY_MODE_CONFLICT',
       400,
-      'O modo Parâmetros Livres não pode ser vinculado a ID, código ou versão de regra de modalidade.'
+      'O modo Parâmetros Livres não pode ser vinculado a ID, código, concurso ou versão de regra de modalidade.'
     );
   }
 
@@ -178,6 +255,10 @@ export async function resolveAndValidateTheoreticalInput(
         'drawnCount e chosenCount devem ser menores ou iguais a universeSize.'
       );
     }
+    const freeRefDate = input.referenceDate
+      ? parseExplicitReferenceDate(input.referenceDate)
+      : new Date();
+
     return {
       mode: 'free',
       lotteryCode: 'generic-reference',
@@ -187,6 +268,7 @@ export async function resolveAndValidateTheoreticalInput(
       modalityContext: {
         mode: 'free',
         rulesVerified: false,
+        referenceDate: freeRefDate.toISOString(),
       },
     };
   }
@@ -229,33 +311,159 @@ export async function resolveAndValidateTheoreticalInput(
     );
   }
 
+  // Resolução temporal (atual, data explícita ou concurso histórico)
+  let effectiveReferenceDate: Date;
+  let referenceSource: ReferenceDateSource;
+  let targetRuleVersionId = input.ruleVersionId;
+  let contestRecord: ContestReferenceRecord | null = null;
+
+  if (input.contestId !== undefined || input.contestNumber !== undefined) {
+    if (input.contestId !== undefined) {
+      if (!repository.findContestById) {
+        throw new ModalityValidationError(
+          'CONTEST_LOOKUP_UNAVAILABLE',
+          500,
+          'Repositório não suporta consulta de concurso histórico por ID.'
+        );
+      }
+      contestRecord = await repository.findContestById(input.contestId);
+    } else if (input.contestNumber !== undefined) {
+      if (!repository.findContestByLotteryAndNumber) {
+        throw new ModalityValidationError(
+          'CONTEST_LOOKUP_UNAVAILABLE',
+          500,
+          'Repositório não suporta consulta de concurso histórico por número.'
+        );
+      }
+      contestRecord = await repository.findContestByLotteryAndNumber(
+        lottery.id,
+        input.contestNumber
+      );
+    }
+
+    if (!contestRecord) {
+      throw new ModalityValidationError(
+        'CONTEST_NOT_FOUND',
+        404,
+        'Concurso histórico não encontrado para a modalidade informada.'
+      );
+    }
+
+    if (contestRecord.lotteryTypeId !== lottery.id) {
+      throw new ModalityValidationError(
+        'CONTEST_MODALITY_MISMATCH',
+        400,
+        `Concurso #${contestRecord.id} não pertence à modalidade "${lottery.code}".`
+      );
+    }
+
+    if (
+      input.contestNumber !== undefined &&
+      contestRecord.contestNumber !== input.contestNumber
+    ) {
+      throw new ModalityValidationError(
+        'CONTEST_MISMATCH',
+        400,
+        `Número do concurso (${input.contestNumber}) diverge do registro #${contestRecord.id} (${contestRecord.contestNumber}).`
+      );
+    }
+
+    if (contestRecord.drawDate) {
+      if (input.referenceDate !== undefined) {
+        const parsedExplicit = parseExplicitReferenceDate(input.referenceDate);
+        if (Math.abs(parsedExplicit.getTime() - contestRecord.drawDate.getTime()) > 1000) {
+          throw new ModalityValidationError(
+            'REFERENCE_DATE_CONFLICT',
+            400,
+            'A data de referência informada diverge da data oficial do concurso histórico.'
+          );
+        }
+      }
+      effectiveReferenceDate = contestRecord.drawDate;
+    } else if (input.referenceDate !== undefined) {
+      effectiveReferenceDate = parseExplicitReferenceDate(input.referenceDate);
+    } else {
+      throw new ModalityValidationError(
+        'CONTEST_MISSING_DRAW_DATE',
+        422,
+        `Concurso ${contestRecord.contestNumber} não possui data de sorteio registrada para validar vigência temporal.`
+      );
+    }
+
+    if (contestRecord.ruleVersionId !== null) {
+      if (
+        targetRuleVersionId !== undefined &&
+        targetRuleVersionId !== contestRecord.ruleVersionId
+      ) {
+        throw new ModalityValidationError(
+          'RULE_VERSION_CONTEST_MISMATCH',
+          400,
+          `A versão de regra #${targetRuleVersionId} diverge da versão vinculada ao concurso ${contestRecord.contestNumber} (#${contestRecord.ruleVersionId}).`
+        );
+      }
+      targetRuleVersionId = contestRecord.ruleVersionId;
+    }
+
+    referenceSource = 'historical_contest';
+  } else if (input.referenceDate !== undefined) {
+    effectiveReferenceDate = parseExplicitReferenceDate(input.referenceDate);
+    referenceSource = 'explicit_reference_date';
+  } else {
+    effectiveReferenceDate = new Date();
+    referenceSource = 'current_timestamp';
+  }
+
   const ruleVersions = await repository.findRuleVersionsByLotteryId(lottery.id);
 
   let selectedRule: ModalityRuleVersionRecord | undefined;
-  if (input.ruleVersionId !== undefined) {
-    selectedRule = ruleVersions.find((r) => r.id === input.ruleVersionId);
+  if (targetRuleVersionId !== undefined) {
+    selectedRule = ruleVersions.find((r) => r.id === targetRuleVersionId);
     if (!selectedRule) {
       throw new ModalityValidationError(
         'RULE_VERSION_NOT_FOUND',
         404,
-        `Versão de regra #${input.ruleVersionId} não pertence à modalidade "${lottery.code}".`
+        `Versão de regra #${targetRuleVersionId} não pertence à modalidade "${lottery.code}".`
       );
     }
-    if (!selectedRule.isVerified || !hasCompleteMathematicalRule(selectedRule)) {
+
+    if (!selectedRule.isVerified || !hasCompleteRuleParameters(selectedRule)) {
       throw new ModalityValidationError(
         'MODALITY_AWAITING_CONFIGURATION',
         409,
         `Modalidade "${lottery.name}" aguarda configuração: a versão de regras #${selectedRule.id} ainda não foi oficialmente verificada.`
       );
     }
+
+    const temporalStatus = classifyRuleTemporalStatus(selectedRule, effectiveReferenceDate);
+    if (temporalStatus === 'future') {
+      throw new ModalityValidationError(
+        'RULE_VERSION_FUTURE',
+        409,
+        `A versão de regra v${selectedRule.versionNumber} (#${selectedRule.id}) possui vigência futura a partir de ${selectedRule.validFrom.toISOString()} (referência: ${effectiveReferenceDate.toISOString()}).`
+      );
+    }
+    if (temporalStatus === 'expired') {
+      throw new ModalityValidationError(
+        'RULE_VERSION_EXPIRED',
+        409,
+        `A versão de regra v${selectedRule.versionNumber} (#${selectedRule.id}) expirou em ${selectedRule.validTo?.toISOString()} (referência: ${effectiveReferenceDate.toISOString()}).`
+      );
+    }
   } else {
-    const verifiedComplete = ruleVersions.filter(
-      (r) => r.isVerified && hasCompleteMathematicalRule(r)
-    );
     selectedRule =
-      verifiedComplete.find((r) => r.validTo === null) ?? verifiedComplete[0];
+      selectActiveVerifiedRuleVersion(ruleVersions, effectiveReferenceDate) ?? undefined;
 
     if (!selectedRule) {
+      const hasAnyVerified = ruleVersions.some(
+        (r) => r.isVerified && hasCompleteRuleParameters(r)
+      );
+      if (hasAnyVerified) {
+        throw new ModalityValidationError(
+          'RULE_NOT_EFFECTIVE_AT_DATE',
+          409,
+          `Nenhuma versão de regra verificada para "${lottery.name}" está vigente na data de referência ${effectiveReferenceDate.toISOString()}. Regras futuras ou expiradas não são aplicadas.`
+        );
+      }
       throw new ModalityValidationError(
         'MODALITY_AWAITING_CONFIGURATION',
         409,
@@ -324,6 +532,12 @@ export async function resolveAndValidateTheoreticalInput(
       lotteryName: lottery.name,
       ruleVersionId: selectedRule.id,
       ruleVersionNumber: selectedRule.versionNumber,
+      ruleValidFrom: selectedRule.validFrom.toISOString(),
+      ruleValidTo: selectedRule.validTo ? selectedRule.validTo.toISOString() : null,
+      referenceDate: effectiveReferenceDate.toISOString(),
+      referenceSource,
+      contestId: contestRecord ? contestRecord.id : null,
+      contestNumber: contestRecord ? contestRecord.contestNumber : null,
       universeMin,
       universeMax,
       universeSize: expectedUniverseSize,

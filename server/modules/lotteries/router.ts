@@ -4,6 +4,10 @@ import { z } from 'zod';
 import { db } from '../../../src/db/index.ts';
 import { lotteryRuleVersions, lotteryTypes, specialEvents } from '../../../src/db/schema.ts';
 import { ensureInitialCatalogSeeded } from '../../../src/db/seed-catalog.ts';
+import {
+  classifyRuleTemporalStatus,
+  selectActiveVerifiedRuleVersion,
+} from '../../../src/modules/probabilities/rule-validity.ts';
 import { validateQuery } from '../../middleware/validate.ts';
 
 export const lotteriesRouter = Router();
@@ -43,17 +47,25 @@ lotteriesRouter.get('/', validateQuery(listQuerySchema), async (req, res) => {
       .from(lotteryRuleVersions)
       .orderBy(asc(lotteryRuleVersions.versionNumber));
 
-    const items = allLotteries.map((lottery) => ({
-      ...lottery,
-      specialEvents: allEvents.filter((e) => e.lotteryTypeId === lottery.id),
-      ruleVersionsCount: allRuleVersions.filter((r) => r.lotteryTypeId === lottery.id).length,
-    }));
+    const referenceNow = new Date();
 
-    const hasVerifiedRules = allRuleVersions.some((r) => r.isVerified);
+    const items = allLotteries.map((lottery) => {
+      const rules = allRuleVersions.filter((r) => r.lotteryTypeId === lottery.id);
+      const activeRule = selectActiveVerifiedRuleVersion(rules, referenceNow);
+      return {
+        ...lottery,
+        specialEvents: allEvents.filter((e) => e.lotteryTypeId === lottery.id),
+        ruleVersionsCount: rules.length,
+        activeRuleVersionId: activeRule?.id ?? null,
+      };
+    });
+
+    const hasVerifiedActiveRules = items.some((item) => item.activeRuleVersionId !== null);
 
     return res.json({
       stage: 'etapa-1-fundacao',
-      rulesVerified: hasVerifiedRules,
+      referenceDate: referenceNow.toISOString(),
+      rulesVerified: hasVerifiedActiveRules,
       total: items.length,
       items,
     });
@@ -78,6 +90,20 @@ lotteriesRouter.get('/:id', async (req, res) => {
       });
     }
 
+    let referenceDate = new Date();
+    const rawRefDate =
+      typeof req.query.referenceDate === 'string' ? req.query.referenceDate.trim() : '';
+    if (rawRefDate) {
+      const parsedRef = new Date(rawRefDate);
+      if (Number.isNaN(parsedRef.getTime())) {
+        return res.status(400).json({
+          error: 'INVALID_REFERENCE_DATE',
+          message: 'Parâmetro referenceDate inválido. Utilize formato ISO-8601.',
+        });
+      }
+      referenceDate = parsedRef;
+    }
+
     const numericId = /^\d+$/.test(rawId) ? Number(rawId) : null;
     const rows = numericId
       ? await db.select().from(lotteryTypes).where(eq(lotteryTypes.id, numericId)).limit(1)
@@ -97,14 +123,22 @@ lotteriesRouter.get('/:id', async (req, res) => {
       .where(eq(specialEvents.lotteryTypeId, lottery.id))
       .orderBy(asc(specialEvents.id));
 
-    const ruleVersions = await db
+    const ruleVersionsRaw = await db
       .select()
       .from(lotteryRuleVersions)
       .where(eq(lotteryRuleVersions.lotteryTypeId, lottery.id))
       .orderBy(asc(lotteryRuleVersions.versionNumber));
 
+    const activeRule = selectActiveVerifiedRuleVersion(ruleVersionsRaw, referenceDate);
+    const ruleVersions = ruleVersionsRaw.map((rule) => ({
+      ...rule,
+      temporalStatus: classifyRuleTemporalStatus(rule, referenceDate),
+    }));
+
     return res.json({
       ...lottery,
+      referenceDate: referenceDate.toISOString(),
+      activeRuleVersionId: activeRule?.id ?? null,
       specialEvents: events,
       ruleVersions,
     });

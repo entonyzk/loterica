@@ -111,9 +111,18 @@ export function buildOpenApiSpec() {
               required: true,
               schema: { type: 'string' },
             },
+            {
+              name: 'referenceDate',
+              in: 'query',
+              required: false,
+              description:
+                'Data ISO-8601 opcional para resolver qual versão de regra verificada estava vigente na data histórica.',
+              schema: { type: 'string', format: 'date-time' },
+            },
           ],
           responses: {
-            '200': { description: 'Detalhes da modalidade, versões de regras e eventos especiais' },
+            '200': { description: 'Detalhes da modalidade, versões de regras, vigência temporal e eventos especiais' },
+            '400': { description: 'Parâmetro referenceDate inválido' },
             '404': { description: 'Modalidade não encontrada' },
           },
         },
@@ -146,12 +155,17 @@ export function buildOpenApiSpec() {
       '/api/math/local/theoretical': {
         post: {
           summary: 'Distribuição hipergeométrica teórica exata via cálculo local BigInt (Node.js)',
+          description:
+            'Aceita modo free (Parâmetros Livres) ou modality (com validação de regra verificada e vigência temporal via referenceDate, contestId ou contestNumber).',
           'x-lotus-status': 'implemented',
           responses: {
-            '200': { description: 'Distribuição racional exata e aproximação IEEE-754' },
-            '400': { description: 'Parâmetros combinatórios ou vínculo de modalidade inválidos' },
-            '404': { description: 'Modalidade ou versão de regra não encontrada' },
-            '409': { description: 'Modalidade aguardando configuração de regras oficiais verificadas' },
+            '200': { description: 'Distribuição racional exata, contexto temporal e aproximação IEEE-754' },
+            '400': { description: 'Parâmetros combinatórios, referência temporal ou vínculo de modalidade inválidos' },
+            '404': { description: 'Modalidade, concurso ou versão de regra não encontrada' },
+            '409': {
+              description:
+                'Modalidade aguardando configuração de regras verificadas ou versão de regra fora de vigência (futura/expirada) para a data de referência',
+            },
           },
         },
       },
@@ -169,12 +183,17 @@ export function buildOpenApiSpec() {
       '/api/math/python/theoretical': {
         post: {
           summary: 'Executa cálculo teórico diretamente no microsserviço Python FastAPI',
+          description:
+            'Valida modalidade, vigência temporal [validFrom, validTo) e integridade matemática rigorosa da resposta Python.',
           'x-lotus-status': 'implemented',
           responses: {
-            '200': { description: 'Resultado validado do motor Python' },
-            '400': { description: 'Parâmetros combinatórios ou vínculo de modalidade inválidos' },
-            '404': { description: 'Modalidade ou versão de regra não encontrada' },
-            '409': { description: 'Modalidade aguardando configuração de regras oficiais verificadas' },
+            '200': { description: 'Resultado validado do motor Python com contexto temporal' },
+            '400': { description: 'Parâmetros combinatórios, referência temporal ou vínculo de modalidade inválidos' },
+            '404': { description: 'Modalidade, concurso ou versão de regra não encontrada' },
+            '409': {
+              description:
+                'Modalidade aguardando configuração de regras verificadas ou versão de regra fora de vigência (futura/expirada) para a data de referência',
+            },
             '502': { description: 'Resposta inválida ou inconsistente do motor Python' },
             '503': { description: 'Motor Python indisponível' },
             '504': { description: 'Timeout do motor Python' },

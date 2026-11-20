@@ -21,6 +21,20 @@ function installFetchMock(options?: { withVerifiedRule?: boolean }) {
             ruleVersions: withVerifiedRule
               ? [
                   {
+                    id: 9,
+                    versionNumber: 0,
+                    minNumbersToChoose: 5,
+                    maxNumbersToChoose: 10,
+                    numberUniverseMin: 1,
+                    numberUniverseMax: 50,
+                    drawnNumbersCount: 5,
+                    officialSource: 'Regra Histórica Teste',
+                    isVerified: true,
+                    isLocked: true,
+                    validFrom: '2018-01-01T00:00:00.000Z',
+                    validTo: '2025-12-31T23:59:59.000Z',
+                  },
+                  {
                     id: 10,
                     versionNumber: 1,
                     minNumbersToChoose: 6,
@@ -32,6 +46,20 @@ function installFetchMock(options?: { withVerifiedRule?: boolean }) {
                     isVerified: true,
                     isLocked: false,
                     validFrom: '2026-01-01T00:00:00.000Z',
+                    validTo: null,
+                  },
+                  {
+                    id: 12,
+                    versionNumber: 2,
+                    minNumbersToChoose: 6,
+                    maxNumbersToChoose: 15,
+                    numberUniverseMin: 1,
+                    numberUniverseMax: 70,
+                    drawnNumbersCount: 6,
+                    officialSource: 'Regra Futura Teste',
+                    isVerified: true,
+                    isLocked: false,
+                    validFrom: '2099-01-01T00:00:00.000Z',
                     validTo: null,
                   },
                 ]
@@ -187,5 +215,17 @@ describe('Unitários UI — Responsividade e Laboratório Matemático', () => {
       drawnCount: 6,
       chosenCount: 6,
     });
+    expect(typeof sentBody.referenceDate).toBe('string');
+
+    // Alternar referência temporal para data histórica (2021) deve carregar regra histórica #9 (v0)
+    fireEvent.change(screen.getByLabelText('Referência temporal da regra'), {
+      target: { value: 'date' },
+    });
+    fireEvent.change(screen.getByLabelText('Data de referência da regra'), {
+      target: { value: '2021-06-15' },
+    });
+    expect(
+      await screen.findByText(/Regra v0 \(ID #9\) carregada automaticamente:/i)
+    ).toBeInTheDocument();
   });
 });

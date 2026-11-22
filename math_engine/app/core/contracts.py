@@ -55,12 +55,15 @@ class SpecializedProbabilityRequest(BaseModel):
     price_updated_at: Optional[StrictStr] = Field(default=None, max_length=64)
     price_source: Optional[StrictStr] = Field(default=None, max_length=512)
     simple_games_count: Optional[StrictInt] = Field(default=None, ge=1, le=1_000_000)
+    simple_bets: Optional[List[List[StrictInt]]] = Field(default=None, min_length=1, max_length=12)
 
     @model_validator(mode="after")
     def validate_bounds(self) -> "SpecializedProbabilityRequest":
         cleaned_code = self.lottery_code.strip()
         if len(cleaned_code) < 2:
             raise ValueError("lottery_code deve conter ao menos 2 caracteres válidos.")
+        if cleaned_code == "generic-reference":
+            raise ValueError("Modo genérico ('generic-reference') deve utilizar exclusivamente /v1/probabilities/theoretical.")
         self.lottery_code = cleaned_code
 
         if self.drawn_count > self.universe_size:
@@ -78,9 +81,57 @@ class SpecializedProbabilityRequest(BaseModel):
         if self.chosen_count < eff_min or self.chosen_count > eff_max:
             raise ValueError("chosen_count fora do intervalo [min_numbers_to_choose, max_numbers_to_choose].")
 
+        seen_hits = set()
+        seen_orders = set()
+        seen_names = set()
+        main_prize_count = 0
         for tier in self.prize_tiers:
             if tier.hits > self.drawn_count:
                 raise ValueError(f"Faixa '{tier.tier_name}' possui hits={tier.hits} maior que drawn_count={self.drawn_count}.")
+            if tier.hits in seen_hits:
+                raise ValueError(f"Faixa de premiação duplicada para hits={tier.hits}.")
+            seen_hits.add(tier.hits)
+
+            if tier.tier_order in seen_orders:
+                raise ValueError(f"Ordem de faixa duplicada: tier_order={tier.tier_order}.")
+            seen_orders.add(tier.tier_order)
+
+            norm_name = tier.tier_name.strip().lower()
+            if not norm_name:
+                raise ValueError("tier_name não pode ser vazio.")
+            if norm_name in seen_names:
+                raise ValueError(f"Nome de faixa de premiação duplicado: '{tier.tier_name}'.")
+            seen_names.add(norm_name)
+
+            if tier.is_main_prize:
+                main_prize_count += 1
+
+        if main_prize_count > 1:
+            raise ValueError("Apenas uma faixa pode ser marcada como is_main_prize=True.")
+
+        if self.simple_bets is not None:
+            seen_bets = set()
+            for idx, bet in enumerate(self.simple_bets):
+                if len(bet) != self.drawn_count:
+                    raise ValueError(
+                        f"Aposta simples #{idx + 1} deve conter exatamente {self.drawn_count} dezenas (recebidas: {len(bet)})."
+                    )
+                for num in bet:
+                    if num < 1 or num > self.universe_size:
+                        raise ValueError(
+                            f"Dezena {num} na aposta simples #{idx + 1} está fora do universo [1..{self.universe_size}]."
+                        )
+                if len(set(bet)) != len(bet):
+                    raise ValueError(f"Aposta simples #{idx + 1} contém dezenas repetidas.")
+                canonical = tuple(sorted(bet))
+                if canonical in seen_bets:
+                    raise ValueError(f"Aposta simples #{idx + 1} é duplicada; informe combinações distintas.")
+                seen_bets.add(canonical)
+
+            if self.simple_games_count is not None and self.simple_games_count != len(self.simple_bets):
+                raise ValueError(
+                    f"simple_games_count ({self.simple_games_count}) diverge da quantidade de combinações em simple_bets ({len(self.simple_bets)})."
+                )
 
         return self
 

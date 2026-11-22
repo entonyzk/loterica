@@ -9,12 +9,14 @@ import {
   classifyRuleTemporalStatus,
   selectActiveVerifiedRuleVersion,
 } from './rule-validity';
-import {
-  type CalculationMemoryEntry,
-  type LotteryMathModelType,
-  type PrizeTierConfigItem,
-  type SpecializedHitPoint,
-  computeSpecializedModalityAnalysis,
+import type {
+  CalculationMemoryEntry,
+  ExactUnionAnalysis,
+  LotteryMathModelType,
+  PrizeTierConfigItem,
+  SpecializedHitPoint,
+  SpecializedModalityAnalysis,
+  TierAtLeastOneWin,
 } from './specialized';
 
 interface PythonExecutionState {
@@ -25,6 +27,14 @@ interface PythonExecutionState {
   distributionSum?: number;
   referenceDate?: string;
   endpointUsed?: 'theoretical' | 'specialized';
+}
+
+interface SpecializedFetchState {
+  status: 'idle' | 'loading' | 'success' | 'error';
+  errorCode?: string;
+  errorMessage?: string;
+  executionSource?: string;
+  distributionSum?: number;
 }
 
 interface LotterySummaryItem {
@@ -98,6 +108,333 @@ function formatOddsDisplay(probability: number, oddsOneIn: string | null): strin
     return `1 em ${exactRatio.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}`;
   }
   return `1 em ${formatBigIntPtBr(oddsOneIn)}`;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapMemory(raw: any): CalculationMemoryEntry {
+  return {
+    title: String(raw.title),
+    formula: String(raw.formula),
+    substitutedParameters: String(raw.substituted_parameters),
+    rawNumerator: String(raw.raw_numerator),
+    rawDenominator: String(raw.raw_denominator),
+    simplifiedFraction: String(raw.simplified_fraction),
+    decimalProbability: Number(raw.decimal_probability),
+    percentageFormatted: String(raw.percentage_formatted),
+    scientificNotation: String(raw.scientific_notation),
+    oddsOneIn: raw.odds_one_in != null ? String(raw.odds_one_in) : null,
+    plainExplanation: String(raw.plain_explanation),
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapAtLeastOneWin(raw: any): TierAtLeastOneWin | undefined {
+  if (!raw) return undefined;
+  return {
+    triggeringVolanteHits: Array.isArray(raw.triggering_volante_hits)
+      ? raw.triggering_volante_hits.map(Number)
+      : [],
+    probability: Number(raw.probability),
+    rawNumerator: String(raw.raw_numerator),
+    rawDenominator: String(raw.raw_denominator),
+    exactNumerator: String(raw.exact_numerator),
+    exactDenominator: String(raw.exact_denominator),
+    scientificNotation: String(raw.scientific_notation),
+    oddsOneIn: raw.odds_one_in != null ? String(raw.odds_one_in) : null,
+    precisionClassification: raw.precision_classification,
+    memory: mapMemory(raw.memory),
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapSpecializedHitPoint(raw: any): SpecializedHitPoint {
+  return {
+    hits: Number(raw.hits),
+    probability: Number(raw.probability),
+    rawNumerator: String(raw.raw_numerator),
+    rawDenominator: String(raw.raw_denominator),
+    exactNumerator: String(raw.exact_numerator),
+    exactDenominator: String(raw.exact_denominator),
+    scientificNotation: String(raw.scientific_notation),
+    oddsOneIn: raw.odds_one_in != null ? String(raw.odds_one_in) : null,
+    isImpossible: Boolean(raw.is_impossible),
+    precisionClassification: raw.precision_classification,
+    tierName: raw.tier_name != null ? String(raw.tier_name) : null,
+    isPrizeTier: Boolean(raw.is_prize_tier),
+    isMainPrize: Boolean(raw.is_main_prize),
+    embeddedSimpleWins: Array.isArray(raw.embedded_simple_wins)
+      ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        raw.embedded_simple_wins.map((w: any) => ({
+          tierName: String(w.tier_name),
+          targetHits: Number(w.target_hits),
+          winningSimpleCombinations: String(w.winning_simple_combinations),
+        }))
+      : [],
+    expectedEmbeddedWinsPerDraw:
+      raw.expected_embedded_wins_per_draw != null
+        ? Number(raw.expected_embedded_wins_per_draw)
+        : undefined,
+    atLeastOneWin: mapAtLeastOneWin(raw.at_least_one_win),
+    memory: mapMemory(raw.memory),
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapExactUnionAnalysis(raw: any): ExactUnionAnalysis | null {
+  if (!raw) return null;
+  return {
+    gamesCount: Number(raw.games_count),
+    pairwiseOverlapSummary: {
+      pairCount: Number(raw.pairwise_overlap_summary.pair_count),
+      minOverlap: Number(raw.pairwise_overlap_summary.min_overlap),
+      maxOverlap: Number(raw.pairwise_overlap_summary.max_overlap),
+      avgOverlap: Number(raw.pairwise_overlap_summary.avg_overlap),
+      disjointPairsCount: Number(raw.pairwise_overlap_summary.disjoint_pairs_count),
+    },
+    mainPrizeUnion: {
+      rawNumerator: String(raw.main_prize_union.raw_numerator),
+      rawDenominator: String(raw.main_prize_union.raw_denominator),
+      exactNumerator: String(raw.main_prize_union.exact_numerator),
+      exactDenominator: String(raw.main_prize_union.exact_denominator),
+      probability: Number(raw.main_prize_union.probability),
+      scientificNotation: String(raw.main_prize_union.scientific_notation),
+      oddsOneIn:
+        raw.main_prize_union.odds_one_in != null ? String(raw.main_prize_union.odds_one_in) : null,
+    },
+    anyPrizeUnion: {
+      rawNumerator: String(raw.any_prize_union.raw_numerator),
+      rawDenominator: String(raw.any_prize_union.raw_denominator),
+      exactNumerator: String(raw.any_prize_union.exact_numerator),
+      exactDenominator: String(raw.any_prize_union.exact_denominator),
+      probability: Number(raw.any_prize_union.probability),
+      scientificNotation: String(raw.any_prize_union.scientific_notation),
+      oddsOneIn:
+        raw.any_prize_union.odds_one_in != null ? String(raw.any_prize_union.odds_one_in) : null,
+      memory: mapMemory(raw.any_prize_union.memory),
+    },
+    secondaryPrizeUnion: {
+      rawNumerator: String(raw.secondary_prize_union.raw_numerator),
+      rawDenominator: String(raw.secondary_prize_union.raw_denominator),
+      exactNumerator: String(raw.secondary_prize_union.exact_numerator),
+      exactDenominator: String(raw.secondary_prize_union.exact_denominator),
+      probability: Number(raw.secondary_prize_union.probability),
+      scientificNotation: String(raw.secondary_prize_union.scientific_notation),
+      oddsOneIn:
+        raw.secondary_prize_union.odds_one_in != null
+          ? String(raw.secondary_prize_union.odds_one_in)
+          : null,
+      memory: mapMemory(raw.secondary_prize_union.memory),
+    },
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapPythonSpecializedToAnalysis(payload: any): SpecializedModalityAnalysis {
+  const distEntries = Object.values(payload.distribution_by_hits ?? {})
+    .map(mapSpecializedHitPoint)
+    .sort((a, b) => a.hits - b.hits);
+
+  return {
+    lotteryCode: String(payload.lottery_code),
+    mathModelType: payload.math_model_type as LotteryMathModelType,
+    universeSize: Number(payload.universe_size),
+    drawnCount: Number(payload.drawn_count),
+    chosenCount: Number(payload.chosen_count),
+    totalSpaceSimpleCombinations: String(payload.total_space_simple_combinations),
+    totalChosenCombinations: String(payload.total_combinations),
+    anyPrize: {
+      label: String(payload.any_prize.label),
+      probability: Number(payload.any_prize.probability),
+      rawNumerator: String(payload.any_prize.raw_numerator),
+      rawDenominator: String(payload.any_prize.raw_denominator),
+      exactNumerator: String(payload.any_prize.exact_numerator),
+      exactDenominator: String(payload.any_prize.exact_denominator),
+      scientificNotation: String(payload.any_prize.scientific_notation),
+      oddsOneIn: payload.any_prize.odds_one_in != null ? String(payload.any_prize.odds_one_in) : null,
+      precisionClassification: payload.any_prize.precision_classification,
+      memory: mapMemory(payload.any_prize.memory),
+    },
+    noPrize: {
+      label: String(payload.no_prize.label),
+      probability: Number(payload.no_prize.probability),
+      rawNumerator: String(payload.no_prize.raw_numerator),
+      rawDenominator: String(payload.no_prize.raw_denominator),
+      exactNumerator: String(payload.no_prize.exact_numerator),
+      exactDenominator: String(payload.no_prize.exact_denominator),
+      scientificNotation: String(payload.no_prize.scientific_notation),
+      oddsOneIn: payload.no_prize.odds_one_in != null ? String(payload.no_prize.odds_one_in) : null,
+      precisionClassification: payload.no_prize.precision_classification,
+      memory: mapMemory(payload.no_prize.memory),
+    },
+    prizeTiers: Array.isArray(payload.prize_tiers)
+      ? payload.prize_tiers.map(mapSpecializedHitPoint)
+      : [],
+    distribution: distEntries,
+    multipleBet: {
+      chosenCount: Number(payload.multiple_bet.chosen_count),
+      drawnCount: Number(payload.multiple_bet.drawn_count),
+      isMultipleBet: Boolean(payload.multiple_bet.is_multiple_bet),
+      equivalentSimpleBets: String(payload.multiple_bet.equivalent_simple_bets),
+      simpleBetPriceCents:
+        payload.multiple_bet.simple_bet_price_cents != null
+          ? Number(payload.multiple_bet.simple_bet_price_cents)
+          : null,
+      totalCostCents:
+        payload.multiple_bet.total_cost_cents != null
+          ? String(payload.multiple_bet.total_cost_cents)
+          : null,
+      priceUpdatedAt:
+        payload.multiple_bet.price_updated_at != null
+          ? String(payload.multiple_bet.price_updated_at)
+          : null,
+      priceSource:
+        payload.multiple_bet.price_source != null
+          ? String(payload.multiple_bet.price_source)
+          : null,
+      combinatorialCoverage: {
+        numerator: String(payload.multiple_bet.combinatorial_coverage.numerator),
+        denominator: String(payload.multiple_bet.combinatorial_coverage.denominator),
+        simplifiedNumerator: String(payload.multiple_bet.combinatorial_coverage.simplified_numerator),
+        simplifiedDenominator: String(
+          payload.multiple_bet.combinatorial_coverage.simplified_denominator
+        ),
+        probability: Number(payload.multiple_bet.combinatorial_coverage.probability),
+        scientificNotation: String(payload.multiple_bet.combinatorial_coverage.scientific_notation),
+        oddsOneIn:
+          payload.multiple_bet.combinatorial_coverage.odds_one_in != null
+            ? String(payload.multiple_bet.combinatorial_coverage.odds_one_in)
+            : null,
+      },
+    },
+    simpleGamesComparison: {
+      simpleGamesCount: Number(payload.simple_games_comparison.simple_games_count),
+      simpleBetPriceCents:
+        payload.simple_games_comparison.simple_bet_price_cents != null
+          ? Number(payload.simple_games_comparison.simple_bet_price_cents)
+          : null,
+      totalCostCents:
+        payload.simple_games_comparison.total_cost_cents != null
+          ? String(payload.simple_games_comparison.total_cost_cents)
+          : null,
+      topPrizeExact: {
+        numerator: String(payload.simple_games_comparison.top_prize_exact.numerator),
+        denominator: String(payload.simple_games_comparison.top_prize_exact.denominator),
+        simplifiedNumerator: String(
+          payload.simple_games_comparison.top_prize_exact.simplified_numerator
+        ),
+        simplifiedDenominator: String(
+          payload.simple_games_comparison.top_prize_exact.simplified_denominator
+        ),
+        probability: Number(payload.simple_games_comparison.top_prize_exact.probability),
+        scientificNotation: String(
+          payload.simple_games_comparison.top_prize_exact.scientific_notation
+        ),
+        oddsOneIn:
+          payload.simple_games_comparison.top_prize_exact.odds_one_in != null
+            ? String(payload.simple_games_comparison.top_prize_exact.odds_one_in)
+            : null,
+      },
+      expectedWinningGamesPerDraw: Number(
+        payload.simple_games_comparison.expected_winning_games_per_draw
+      ),
+      expectedSecondaryWinningGamesPerDraw: Number(
+        payload.simple_games_comparison.expected_secondary_winning_games_per_draw
+      ),
+      secondaryPrizeStatus: payload.simple_games_comparison.secondary_prize_status,
+      overlapDependencyNotice: String(payload.simple_games_comparison.overlap_dependency_notice),
+      exactUnionAnalysis: mapExactUnionAnalysis(
+        payload.simple_games_comparison.exact_union_analysis
+      ),
+      illustrativeIndependentApproximation: {
+        value: Number(
+          payload.simple_games_comparison.illustrative_independent_approximation.value
+        ),
+        isExact: false,
+        warning: String(
+          payload.simple_games_comparison.illustrative_independent_approximation.warning
+        ),
+      },
+      equiprobabilityNotice: String(payload.simple_games_comparison.equiprobability_notice),
+    },
+    comparisonRows: Array.isArray(payload.comparison_rows)
+      ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        payload.comparison_rows.map((r: any) => ({
+          chosenCount: Number(r.chosen_count),
+          isSelected: Boolean(r.is_selected),
+          equivalentSimpleBets: String(r.equivalent_simple_bets),
+          totalCostCents: r.total_cost_cents != null ? String(r.total_cost_cents) : null,
+          totalSpaceCombinations: String(r.total_space_combinations),
+          mainPrizeHits: Number(r.main_prize_hits),
+          mainPrizeProbability: Number(r.main_prize_probability),
+          mainPrizeOddsOneIn: r.main_prize_odds_one_in != null ? String(r.main_prize_odds_one_in) : null,
+          anyPrizeProbability: Number(r.any_prize_probability),
+          anyPrizeOddsOneIn: r.any_prize_odds_one_in != null ? String(r.any_prize_odds_one_in) : null,
+          noPrizeProbability: Number(r.no_prize_probability),
+          coverageFactorVsMinimum: String(r.coverage_factor_vs_minimum),
+        }))
+      : [],
+    equiprobabilityAxiom: String(payload.axiom_notice ?? ''),
+  };
+}
+
+function parseExplicitSimpleBetsText(
+  text: string,
+  universeSize: number,
+  drawnCount: number
+): { bets: number[][]; error: string | null } {
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (lines.length === 0) {
+    return { bets: [], error: 'Informe pelo menos 1 combinação (uma por linha).' };
+  }
+  if (lines.length > 12) {
+    return { bets: [], error: 'Limite de 12 combinações simples para cálculo exato da união.' };
+  }
+  const seen = new Set<string>();
+  const bets: number[][] = [];
+  for (let idx = 0; idx < lines.length; idx++) {
+    const tokens = lines[idx].split(/[\s,;]+/).filter(Boolean);
+    const nums = tokens.map(Number);
+    if (nums.length !== drawnCount) {
+      return {
+        bets: [],
+        error: `Linha #${idx + 1}: esperada(s) ${drawnCount} dezena(s), encontradas ${nums.length}.`,
+      };
+    }
+    const uniq = new Set<number>();
+    for (const num of nums) {
+      if (!Number.isInteger(num) || num < 1 || num > universeSize) {
+        return {
+          bets: [],
+          error: `Linha #${idx + 1}: dezena "${num}" deve ser inteiro entre 1 e ${universeSize}.`,
+        };
+      }
+      uniq.add(num);
+    }
+    if (uniq.size !== nums.length) {
+      return {
+        bets: [],
+        error: `Linha #${idx + 1}: contém dezenas repetidas.`,
+      };
+    }
+    const sorted = Array.from(uniq).sort((a, b) => a - b);
+    const key = sorted.join(',');
+    if (seen.has(key)) {
+      return {
+        bets: [],
+        error: `Linha #${idx + 1}: combinação repetida; informe jogos distintos.`,
+      };
+    }
+    seen.add(key);
+    bets.push(sorted);
+  }
+  return { bets, error: null };
+}
+
+function formatBetsLines(bets: number[][]): string {
+  return bets.map((b) => b.map((n) => String(n).padStart(2, '0')).join(' ')).join('\n');
 }
 
 const MemoryPanel: React.FC<{ memory: CalculationMemoryEntry }> = ({ memory }) => (
@@ -174,14 +511,29 @@ export const MathLabView: React.FC = () => {
 
   // Controles especializados (Simples vs Múltiplas & Comparador A vs B)
   const [simpleGamesCount, setSimpleGamesCount] = useState(7);
+  const [simpleBetsText, setSimpleBetsText] = useState('');
+  const [appliedSimpleBets, setAppliedSimpleBets] = useState<number[][] | null>(null);
+  const [simpleBetsInputError, setSimpleBetsInputError] = useState<string | null>(null);
   const [compareConfigA, setCompareConfigA] = useState<number>(6);
   const [compareConfigB, setCompareConfigB] = useState<number>(7);
 
+  // Resultado especializado remoto exclusivamente do motor Python
+  const [specializedAnalysis, setSpecializedAnalysis] =
+    useState<SpecializedModalityAnalysis | null>(null);
+  const [specializedFetch, setSpecializedFetch] = useState<SpecializedFetchState>({
+    status: 'idle',
+  });
+  const [specializedRefreshNonce, setSpecializedRefreshNonce] = useState(0);
+
   // Memória de cálculo expansível
   const [expandedHits, setExpandedHits] = useState<Record<number, boolean>>({});
+  const [expandedTierAtLeastOne, setExpandedTierAtLeastOne] = useState<Record<number, boolean>>({});
   const [expandedAggregate, setExpandedAggregate] = useState<'none' | 'any' | 'no'>('none');
+  const [expandedUnionMemory, setExpandedUnionMemory] = useState<'none' | 'any' | 'secondary'>(
+    'none'
+  );
 
-  // Execução no motor Python
+  // Execução manual no motor Python (para modo Parâmetros Livres ou verificação teórica)
   const [pythonState, setPythonState] = useState<PythonExecutionState>({ status: 'idle' });
 
   // Carrega catálogo de modalidades ao entrar no laboratório
@@ -325,9 +677,13 @@ export const MathLabView: React.FC = () => {
     return { total: versions.length, verifiedCount, futureCount, expiredCount };
   }, [selectedLotteryDetail, effectiveReferenceDate]);
 
-  // Carregamento automático dos parâmetros quando houver regra verificada no modo modalidade
+  // Carregamento automático dos controles ao trocar modalidade ou regra vigente
   useEffect(() => {
-    if (mode !== 'modality' || !activeVerifiedRule) return;
+    if (mode !== 'modality' || !activeVerifiedRule) {
+      setSpecializedAnalysis(null);
+      setSpecializedFetch({ status: 'idle' });
+      return;
+    }
     const n =
       (activeVerifiedRule.numberUniverseMax ?? 1) -
       (activeVerifiedRule.numberUniverseMin ?? 1) +
@@ -343,10 +699,26 @@ export const MathLabView: React.FC = () => {
     const nextEq =
       minM + 1 <= maxM && minM + 1 >= k ? Number(exactCombinationsBigInt(minM + 1, k)) : 1;
     setSimpleGamesCount(Math.min(nextEq, 1000));
+    setSimpleBetsText('');
+    setAppliedSimpleBets(null);
+    setSimpleBetsInputError(null);
     setExpandedHits({});
+    setExpandedTierAtLeastOne({});
     setExpandedAggregate('none');
+    setExpandedUnionMemory('none');
     setPythonState({ status: 'idle' });
   }, [mode, activeVerifiedRule]);
+
+  const ruleUniverseSize =
+    mode === 'modality' && activeVerifiedRule
+      ? (activeVerifiedRule.numberUniverseMax ?? 1) -
+        (activeVerifiedRule.numberUniverseMin ?? 1) +
+        1
+      : universeSize;
+  const ruleDrawnCount =
+    mode === 'modality' && activeVerifiedRule
+      ? activeVerifiedRule.drawnNumbersCount ?? drawnCount
+      : drawnCount;
 
   const minChosenLimit =
     mode === 'modality' && activeVerifiedRule?.minNumbersToChoose != null
@@ -354,70 +726,129 @@ export const MathLabView: React.FC = () => {
       : 2;
   const maxChosenLimit =
     mode === 'modality' && activeVerifiedRule?.maxNumbersToChoose != null
-      ? Math.min(activeVerifiedRule.maxNumbersToChoose, universeSize)
-      : Math.min(20, universeSize);
+      ? Math.min(activeVerifiedRule.maxNumbersToChoose, ruleUniverseSize)
+      : Math.min(20, ruleUniverseSize);
 
-  const safeDrawn = Math.min(Math.max(1, drawnCount), universeSize);
+  const safeDrawn = Math.min(Math.max(1, ruleDrawnCount), ruleUniverseSize);
   const safeChosen = Math.min(Math.max(minChosenLimit, chosenCount), maxChosenLimit);
   const modalityAwaitingRules = mode === 'modality' && !activeVerifiedRule;
 
-  const totalCombinations = useMemo(
-    () => exactCombinationsBigInt(universeSize, safeChosen),
-    [universeSize, safeChosen]
-  );
+  // Integração oficial da Etapa 2: busca cálculo especializado exclusivamente em POST /api/math/python/specialized
+  // NUNCA realiza fallback silencioso para cálculo local em TypeScript.
+  useEffect(() => {
+    if (mode !== 'modality' || !activeVerifiedRule || !selectedLotteryDetail) {
+      return;
+    }
 
-  const distribution = useMemo(
-    () => buildHypergeometricDistribution(universeSize, safeDrawn, safeChosen),
-    [universeSize, safeDrawn, safeChosen]
-  );
+    const controller = new AbortController();
+    let active = true;
 
-  const specializedAnalysis = useMemo(() => {
-    if (mode !== 'modality' || !activeVerifiedRule || !selectedLotteryDetail) return null;
-    return computeSpecializedModalityAnalysis({
-      lotteryCode: selectedLotteryDetail.code,
-      mathModelType: (activeVerifiedRule.mathModelType ?? 'hypergeometric_single_group') as LotteryMathModelType,
-      universeSize,
-      drawnCount: safeDrawn,
-      chosenCount: safeChosen,
-      minNumbersToChoose: minChosenLimit,
-      maxNumbersToChoose: maxChosenLimit,
-      prizeTiers: Array.isArray(activeVerifiedRule.prizeTiersConfig)
-        ? activeVerifiedRule.prizeTiersConfig
-        : [],
-      simpleBetPriceCents: activeVerifiedRule.simpleBetPriceCents ?? null,
-      priceUpdatedAt: activeVerifiedRule.priceUpdatedAt ?? null,
-      priceSource: activeVerifiedRule.priceSource ?? null,
-      simpleGamesCount,
-    });
+    const fetchSpecializedFromPython = async () => {
+      setSpecializedFetch({ status: 'loading' });
+      setSpecializedAnalysis(null);
+
+      try {
+        const requestBody = {
+          mode: 'modality' as const,
+          lotteryId: selectedLotteryDetail.id,
+          lotteryCode: selectedLotteryDetail.code,
+          ruleVersionId: activeVerifiedRule.id,
+          ...(referenceMode === 'contest' && selectedContest
+            ? {
+                contestId: selectedContest.id,
+                contestNumber: selectedContest.contestNumber,
+              }
+            : {}),
+          referenceDate: effectiveReferenceDate.toISOString(),
+          universeSize: ruleUniverseSize,
+          drawnCount: safeDrawn,
+          chosenCount: safeChosen,
+          simpleGamesCount: appliedSimpleBets ? appliedSimpleBets.length : simpleGamesCount,
+          ...(appliedSimpleBets ? { simpleBets: appliedSimpleBets } : {}),
+        };
+
+        const response = await fetch('/api/math/python/specialized', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+
+        const payload = await response.json().catch(() => null);
+        if (!active) return;
+
+        if (!response.ok || !payload) {
+          const errCode =
+            payload && typeof payload.error === 'string'
+              ? payload.error
+              : `HTTP_${response.status}`;
+          const errMsg =
+            payload && typeof payload.message === 'string'
+              ? payload.message
+              : `Falha ao consultar o motor matemático Python (HTTP ${response.status}).`;
+          setSpecializedFetch({
+            status: 'error',
+            errorCode: errCode,
+            errorMessage: errMsg,
+          });
+          setSpecializedAnalysis(null);
+          return;
+        }
+
+        const mapped = mapPythonSpecializedToAnalysis(payload);
+        setSpecializedAnalysis(mapped);
+        setSpecializedFetch({
+          status: 'success',
+          executionSource: payload.execution_source,
+          distributionSum: payload.distribution_sum,
+        });
+      } catch (err) {
+        if (!active || (err instanceof Error && err.name === 'AbortError')) return;
+        setSpecializedFetch({
+          status: 'error',
+          errorCode: 'NETWORK_ERROR',
+          errorMessage:
+            err instanceof Error
+              ? err.message
+              : 'Falha de rede ao consultar o motor matemático Python.',
+        });
+        setSpecializedAnalysis(null);
+      }
+    };
+
+    void fetchSpecializedFromPython();
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [
     mode,
-    activeVerifiedRule,
     selectedLotteryDetail,
-    universeSize,
+    activeVerifiedRule,
+    referenceMode,
+    selectedContest,
+    effectiveReferenceDate,
+    ruleUniverseSize,
     safeDrawn,
     safeChosen,
-    minChosenLimit,
-    maxChosenLimit,
     simpleGamesCount,
+    appliedSimpleBets,
+    specializedRefreshNonce,
   ]);
 
-  const compareRowA = useMemo(
-    () =>
-      specializedAnalysis?.comparisonRows.find((r) => r.chosenCount === compareConfigA) ??
-      specializedAnalysis?.comparisonRows[0] ??
-      null,
-    [specializedAnalysis, compareConfigA]
-  );
-  const compareRowB = useMemo(
-    () =>
-      specializedAnalysis?.comparisonRows.find((r) => r.chosenCount === compareConfigB) ??
-      specializedAnalysis?.comparisonRows[Math.min(1, (specializedAnalysis?.comparisonRows.length ?? 1) - 1)] ??
-      null,
-    [specializedAnalysis, compareConfigB]
+  // Cálculos locais exclusivos para o modo Parâmetros Livres
+  const freeTotalCombinations = useMemo(
+    () => (mode === 'free' ? exactCombinationsBigInt(universeSize, safeChosen) : 0n),
+    [mode, universeSize, safeChosen]
   );
 
-  // Comparação entre diferentes quantidades de dezenas (modo livre e resumo rápido)
-  const chosenComparisonRows = useMemo(() => {
+  const freeDistribution = useMemo(
+    () => (mode === 'free' ? buildHypergeometricDistribution(universeSize, safeDrawn, safeChosen) : []),
+    [mode, universeSize, safeDrawn, safeChosen]
+  );
+
+  const freeChosenComparisonRows = useMemo(() => {
+    if (mode !== 'free') return [];
     const quantities: number[] = [];
     const upperBound = maxChosenLimit;
     const start = minChosenLimit;
@@ -464,20 +895,82 @@ export const MathLabView: React.FC = () => {
         relativeFactor,
       };
     });
-  }, [universeSize, safeDrawn, safeChosen, minChosenLimit, maxChosenLimit]);
+  }, [mode, universeSize, safeDrawn, safeChosen, minChosenLimit, maxChosenLimit]);
+
+  const compareRowA = useMemo(
+    () =>
+      specializedAnalysis?.comparisonRows.find((r) => r.chosenCount === compareConfigA) ??
+      specializedAnalysis?.comparisonRows[0] ??
+      null,
+    [specializedAnalysis, compareConfigA]
+  );
+  const compareRowB = useMemo(
+    () =>
+      specializedAnalysis?.comparisonRows.find((r) => r.chosenCount === compareConfigB) ??
+      specializedAnalysis?.comparisonRows[
+        Math.min(1, (specializedAnalysis?.comparisonRows.length ?? 1) - 1)
+      ] ??
+      null,
+    [specializedAnalysis, compareConfigB]
+  );
 
   const toggleExpandedHit = (hits: number) => {
     setExpandedHits((prev) => ({ ...prev, [hits]: !prev[hits] }));
   };
 
+  const toggleTierAtLeastOne = (hits: number) => {
+    setExpandedTierAtLeastOne((prev) => ({ ...prev, [hits]: !prev[hits] }));
+  };
+
+  const handleApplySimpleBets = () => {
+    const parsed = parseExplicitSimpleBetsText(simpleBetsText, ruleUniverseSize, safeDrawn);
+    if (parsed.error) {
+      setSimpleBetsInputError(parsed.error);
+      return;
+    }
+    setSimpleBetsInputError(null);
+    setSimpleGamesCount(parsed.bets.length);
+    setAppliedSimpleBets(parsed.bets);
+    setExpandedUnionMemory('none');
+  };
+
+  const handleClearSimpleBets = () => {
+    setSimpleBetsText('');
+    setAppliedSimpleBets(null);
+    setSimpleBetsInputError(null);
+    setExpandedUnionMemory('none');
+  };
+
+  const applyExampleBets = (kind: 'disjoint' | 'high_overlap') => {
+    if (kind === 'disjoint' && ruleUniverseSize >= 2 * safeDrawn) {
+      const b1 = Array.from({ length: safeDrawn }, (_, i) => i + 1);
+      const b2 = Array.from({ length: safeDrawn }, (_, i) => safeDrawn + i + 1);
+      setSimpleBetsText(formatBetsLines([b1, b2]));
+      setSimpleBetsInputError(null);
+      setSimpleGamesCount(2);
+      setAppliedSimpleBets([b1, b2]);
+      return;
+    }
+    // Alta sobreposição: compartilham (k - 1) dezenas
+    const b1 = Array.from({ length: safeDrawn }, (_, i) => i + 1);
+    const b2 = [
+      ...Array.from({ length: safeDrawn - 1 }, (_, i) => i + 1),
+      Math.min(ruleUniverseSize, safeDrawn + 1),
+    ];
+    setSimpleBetsText(formatBetsLines([b1, b2]));
+    setSimpleBetsInputError(null);
+    setSimpleGamesCount(2);
+    setAppliedSimpleBets([b1, b2]);
+  };
+
   const handleTestPythonEngine = async (endpoint: 'theoretical' | 'specialized' = 'theoretical') => {
     if (modalityAwaitingRules) return;
+    if (endpoint === 'specialized') {
+      setSpecializedRefreshNonce((n) => n + 1);
+      return;
+    }
     setPythonState({ status: 'loading', endpointUsed: endpoint });
     try {
-      const targetUrl =
-        endpoint === 'specialized'
-          ? '/api/math/python/specialized'
-          : '/api/math/python/theoretical';
       const requestBody =
         mode === 'modality' && selectedLotteryDetail && activeVerifiedRule
           ? {
@@ -492,10 +985,9 @@ export const MathLabView: React.FC = () => {
                   }
                 : {}),
               referenceDate: effectiveReferenceDate.toISOString(),
-              universeSize,
+              universeSize: ruleUniverseSize,
               drawnCount: safeDrawn,
               chosenCount: safeChosen,
-              ...(endpoint === 'specialized' ? { simpleGamesCount } : {}),
             }
           : {
               mode: 'free' as const,
@@ -505,7 +997,7 @@ export const MathLabView: React.FC = () => {
               chosenCount: safeChosen,
             };
 
-      const response = await fetch(targetUrl, {
+      const response = await fetch('/api/math/python/theoretical', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
@@ -544,15 +1036,15 @@ export const MathLabView: React.FC = () => {
           <div className="flex items-center gap-2 text-xs text-neutral-400">
             <span className="text-[#E5C158] font-medium">Etapa 2 · Motor Especializado</span>
             <span aria-hidden="true">·</span>
-            <span>Combinatória Racional Exata (BigInt / Python FastAPI)</span>
+            <span>Combinatória Racional Exata (Python FastAPI + PostgreSQL)</span>
           </div>
           <h1 className="mt-1 font-display text-2xl font-semibold text-[#F1F2F4]">
             Laboratório Matemático
           </h1>
           <p className="mt-1 max-w-3xl text-sm text-neutral-400">
-            Calculadora especializada por modalidade (Mega-Sena e Lotofácil) e explorador
-            combinatório livre. Exibe frações exatas, memória de cálculo, apostas simples vs.
-            múltiplas e custos oficiais verificados.
+            Calculadora especializada por modalidade (Mega-Sena e Lotofácil) executada via motor
+            Python (`/api/math/python/specialized`) e explorador combinatório livre. Sem fallback
+            local silencioso em falhas do motor científico.
           </p>
         </div>
 
@@ -606,8 +1098,8 @@ export const MathLabView: React.FC = () => {
                 Seleção de Modalidade e Regras Verificadas
               </h2>
               <p className="mt-1 text-xs text-neutral-400">
-                Parâmetros N, k, limites de m, faixas de premiação e preços oficiais são carregados
-                exclusivamente de versões verificadas no banco PostgreSQL.
+                Parâmetros N, k, limites de m, faixas de premiação e preços oficiais são validados
+                no PostgreSQL e processados exclusivamente no motor Python.
               </p>
             </div>
             {selectedLotteryDetail && (
@@ -713,7 +1205,7 @@ export const MathLabView: React.FC = () => {
                         Regra v{activeVerifiedRule.versionNumber} (ID #{activeVerifiedRule.id}) carregada automaticamente:
                       </span>{' '}
                       Universo [{activeVerifiedRule.numberUniverseMin}..
-                      {activeVerifiedRule.numberUniverseMax}] (N={universeSize}) · Sorteio k=
+                      {activeVerifiedRule.numberUniverseMax}] (N={ruleUniverseSize}) · Sorteio k=
                       {activeVerifiedRule.drawnNumbersCount} · Escolha m ∈ [
                       {activeVerifiedRule.minNumbersToChoose}..
                       {activeVerifiedRule.maxNumbersToChoose}] · Fonte:{' '}
@@ -769,34 +1261,79 @@ export const MathLabView: React.FC = () => {
         </section>
       )}
 
-      {/* Sub-navegação especializada quando modalidade verificada está ativa */}
+      {/* Estados explícitos de carregamento, erro ou indisponibilidade do motor Python no modo modalidade */}
+      {mode === 'modality' && activeVerifiedRule && specializedFetch.status === 'loading' && (
+        <section
+          role="status"
+          aria-live="polite"
+          className="rounded-xl border border-[#8B5CF6]/30 bg-[#12141A] p-5 flex flex-wrap items-center justify-between gap-3"
+        >
+          <div className="text-xs text-neutral-300">
+            <span className="font-semibold text-[#C4B5FD]">
+              Consultando Motor Matemático Python (`/api/math/python/specialized`)...
+            </span>{' '}
+            Validando regras no PostgreSQL e calculando frações racionais exatas para {safeChosen}{' '}
+            dezenas.
+          </div>
+        </section>
+      )}
+
+      {mode === 'modality' && activeVerifiedRule && specializedFetch.status === 'error' && (
+        <section
+          role="alert"
+          className="rounded-xl border border-amber-400/35 bg-[#12141A] p-6 space-y-3"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="font-display text-sm font-semibold text-amber-300">
+                Motor Matemático Especializado Indisponível ({specializedFetch.errorCode})
+              </h2>
+              <p className="text-xs leading-relaxed text-amber-100/90">
+                {specializedFetch.errorMessage}
+              </p>
+              <p className="text-[11px] text-neutral-400">
+                Nenhum cálculo foi simulado ou substituído localmente no navegador: resultados
+                especializados por modalidade dependem integralmente da validação PostgreSQL +
+                resposta auditada do microsserviço Python FastAPI.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSpecializedRefreshNonce((n) => n + 1)}
+              className="rounded-lg border border-amber-400/40 bg-[#0A0B0E] px-3.5 py-2 text-xs font-medium text-amber-300 hover:border-amber-300 cursor-pointer whitespace-nowrap"
+            >
+              Consultar Motor Python Novamente
+            </button>
+          </div>
+        </section>
+      )}
+
+      {/* Sub-navegação especializada quando modalidade verificada está ativa e respondida pelo Python */}
       {mode === 'modality' && activeVerifiedRule && specializedAnalysis && (
         <div className="space-y-6">
           {/* 4 KPIs principais da aposta selecionada */}
           <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div className="rounded-xl border border-white/8 bg-[#12141A] p-4">
               <p className="text-xs text-neutral-400">
-                Combinações C({universeSize}, {safeChosen})
+                Combinações C({ruleUniverseSize}, {safeChosen})
               </p>
               <p className="mt-1.5 font-mono-tabular text-lg font-semibold text-[#F1F2F4]">
                 {formatBigIntPtBr(specializedAnalysis.totalChosenCombinations)}
               </p>
               <p className="mt-1 font-mono-tabular text-[11px] text-neutral-400">
-                Espaço simples C({universeSize},{safeDrawn}):{' '}
+                Espaço simples C({ruleUniverseSize},{safeDrawn}):{' '}
                 {formatBigIntPtBr(specializedAnalysis.totalSpaceSimpleCombinations)}
               </p>
             </div>
 
             <div className="rounded-xl border border-white/8 bg-[#12141A] p-4">
-              <p className="text-xs text-neutral-400">
-                Aposta com {safeChosen} Dezenas
-              </p>
+              <p className="text-xs text-neutral-400">Aposta com {safeChosen} Dezenas</p>
               <p className="mt-1.5 font-mono-tabular text-lg font-semibold text-[#E5C158]">
                 {formatBrlFromCentsStr(specializedAnalysis.multipleBet.totalCostCents)}
               </p>
               <p className="mt-1 font-mono-tabular text-[11px] text-neutral-400">
-                {formatBigIntPtBr(specializedAnalysis.multipleBet.equivalentSimpleBets)} jogo(s) simples
-                equivalente(s)
+                {formatBigIntPtBr(specializedAnalysis.multipleBet.equivalentSimpleBets)} jogo(s)
+                simples equivalente(s)
               </p>
             </div>
 
@@ -860,50 +1397,57 @@ export const MathLabView: React.FC = () => {
           )}
 
           {/* Abas da calculadora especializada */}
-          <div
-            className="flex flex-wrap items-center gap-1 rounded-lg border border-white/8 bg-[#12141A] p-1 w-fit"
-            role="tablist"
-            aria-label="Ferramentas especializadas da modalidade"
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={specializedTab === 'probabilities'}
-              onClick={() => setSpecializedTab('probabilities')}
-              className={`rounded-md px-3.5 py-2 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                specializedTab === 'probabilities'
-                  ? 'bg-[#D4AF37] text-[#0A0B0E]'
-                  : 'text-neutral-300 hover:text-white'
-              }`}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div
+              className="flex flex-wrap items-center gap-1 rounded-lg border border-white/8 bg-[#12141A] p-1 w-fit"
+              role="tablist"
+              aria-label="Ferramentas especializadas da modalidade"
             >
-              Probabilidades & Faixas
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={specializedTab === 'simple_vs_multiple'}
-              onClick={() => setSpecializedTab('simple_vs_multiple')}
-              className={`rounded-md px-3.5 py-2 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                specializedTab === 'simple_vs_multiple'
-                  ? 'bg-[#D4AF37] text-[#0A0B0E]'
-                  : 'text-neutral-300 hover:text-white'
-              }`}
-            >
-              Apostas Simples vs. Múltiplas
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={specializedTab === 'comparator'}
-              onClick={() => setSpecializedTab('comparator')}
-              className={`rounded-md px-3.5 py-2 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                specializedTab === 'comparator'
-                  ? 'bg-[#D4AF37] text-[#0A0B0E]'
-                  : 'text-neutral-300 hover:text-white'
-              }`}
-            >
-              Comparador Matemático
-            </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={specializedTab === 'probabilities'}
+                onClick={() => setSpecializedTab('probabilities')}
+                className={`rounded-md px-3.5 py-2 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                  specializedTab === 'probabilities'
+                    ? 'bg-[#D4AF37] text-[#0A0B0E]'
+                    : 'text-neutral-300 hover:text-white'
+                }`}
+              >
+                Probabilidades & Faixas
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={specializedTab === 'simple_vs_multiple'}
+                onClick={() => setSpecializedTab('simple_vs_multiple')}
+                className={`rounded-md px-3.5 py-2 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                  specializedTab === 'simple_vs_multiple'
+                    ? 'bg-[#D4AF37] text-[#0A0B0E]'
+                    : 'text-neutral-300 hover:text-white'
+                }`}
+              >
+                Apostas Simples vs. Múltiplas
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={specializedTab === 'comparator'}
+                onClick={() => setSpecializedTab('comparator')}
+                className={`rounded-md px-3.5 py-2 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                  specializedTab === 'comparator'
+                    ? 'bg-[#D4AF37] text-[#0A0B0E]'
+                    : 'text-neutral-300 hover:text-white'
+                }`}
+              >
+                Comparador Matemático
+              </button>
+            </div>
+
+            <span className="font-mono-tabular text-[11px] text-neutral-400">
+              Fonte: {specializedFetch.executionSource ?? 'python_fastapi_engine'} · ΣP ={' '}
+              {specializedFetch.distributionSum?.toFixed(12) ?? '1.000000000000'}
+            </span>
           </div>
         </div>
       )}
@@ -922,7 +1466,8 @@ export const MathLabView: React.FC = () => {
                 <p className="mt-1 text-xs text-neutral-400">
                   Compara um volante múltiplo com{' '}
                   <span className="font-mono-tabular text-[#E5C158]">{safeChosen} dezenas</span>{' '}
-                  contra uma quantidade escolhida de jogos simples distintos de {safeDrawn} dezenas.
+                  contra {specializedAnalysis.simpleGamesComparison.simpleGamesCount} jogo(s)
+                  simples de {safeDrawn} dezenas.
                 </p>
               </div>
 
@@ -933,6 +1478,7 @@ export const MathLabView: React.FC = () => {
                     type="number"
                     min={1}
                     max={1000000}
+                    disabled={appliedSimpleBets !== null}
                     aria-label="Quantidade de jogos simples"
                     value={simpleGamesCount}
                     onChange={(e) => {
@@ -941,19 +1487,20 @@ export const MathLabView: React.FC = () => {
                         setSimpleGamesCount(Math.min(1000000, Math.floor(val)));
                       }
                     }}
-                    className="w-24 rounded-lg border border-white/12 bg-[#0A0B0E] px-2.5 py-1.5 font-mono-tabular text-xs text-[#F1F2F4] focus:border-[#D4AF37] focus:outline-none"
+                    className="w-24 rounded-lg border border-white/12 bg-[#0A0B0E] px-2.5 py-1.5 font-mono-tabular text-xs text-[#F1F2F4] focus:border-[#D4AF37] focus:outline-none disabled:opacity-50"
                   />
                 </label>
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    setAppliedSimpleBets(null);
                     setSimpleGamesCount(
                       Math.min(
                         1000000,
                         Number(specializedAnalysis.multipleBet.equivalentSimpleBets) || 1
                       )
-                    )
-                  }
+                    );
+                  }}
                   className="rounded-lg border border-[#D4AF37]/40 bg-[#181B22] px-3 py-1.5 text-xs text-[#E5C158] hover:border-[#D4AF37] cursor-pointer whitespace-nowrap"
                 >
                   Igualar custo ({formatBigIntPtBr(specializedAnalysis.multipleBet.equivalentSimpleBets)})
@@ -970,7 +1517,9 @@ export const MathLabView: React.FC = () => {
                       1 Aposta de {safeChosen} Dezenas
                     </th>
                     <th className="py-2.5 pl-4 font-medium text-[#C4B5FD]">
-                      {specializedAnalysis.simpleGamesComparison.simpleGamesCount.toLocaleString('pt-BR')}{' '}
+                      {specializedAnalysis.simpleGamesComparison.simpleGamesCount.toLocaleString(
+                        'pt-BR'
+                      )}{' '}
                       Jogo(s) Simples Distinto(s)
                     </th>
                   </tr>
@@ -982,7 +1531,9 @@ export const MathLabView: React.FC = () => {
                       {formatBigIntPtBr(specializedAnalysis.multipleBet.equivalentSimpleBets)}
                     </td>
                     <td className="py-3 pl-4 font-mono-tabular text-[#F1F2F4]">
-                      {specializedAnalysis.simpleGamesComparison.simpleGamesCount.toLocaleString('pt-BR')}
+                      {specializedAnalysis.simpleGamesComparison.simpleGamesCount.toLocaleString(
+                        'pt-BR'
+                      )}
                     </td>
                   </tr>
                   <tr>
@@ -998,7 +1549,7 @@ export const MathLabView: React.FC = () => {
                   </tr>
                   <tr>
                     <td className="py-3 pr-4 text-neutral-300">
-                      Cobertura do espaço C({universeSize}, {safeDrawn})
+                      Cobertura exata da faixa principal ({safeDrawn} acertos)
                     </td>
                     <td className="py-3 px-4 font-mono-tabular text-neutral-200">
                       {(
@@ -1025,7 +1576,7 @@ export const MathLabView: React.FC = () => {
                   </tr>
                   <tr>
                     <td className="py-3 pr-4 text-neutral-300">
-                      Probabilidade na faixa principal ({safeDrawn} acertos)
+                      Razão 1 em N na faixa principal ({safeDrawn} acertos)
                     </td>
                     <td className="py-3 px-4 font-mono-tabular text-[#E5C158]">
                       {formatOddsDisplay(
@@ -1042,65 +1593,319 @@ export const MathLabView: React.FC = () => {
                   </tr>
                   <tr>
                     <td className="py-3 pr-4 text-neutral-300">
-                      Premiação global no bilhete / expectativa nos jogos simples
+                      Valor esperado de bilhetes premiados por sorteio
                     </td>
                     <td className="py-3 px-4 font-mono-tabular text-neutral-200">
-                      Exata: {(specializedAnalysis.anyPrize.probability * 100).toPrecision(5)}% (ao
-                      menos 1 faixa)
+                      Volante: {(specializedAnalysis.anyPrize.probability * 100).toPrecision(5)}% (≥
+                      1 faixa)
                     </td>
                     <td className="py-3 pl-4 font-mono-tabular text-neutral-200">
-                      Esperado:{' '}
+                      E[total] ={' '}
                       {specializedAnalysis.simpleGamesComparison.expectedWinningGamesPerDraw.toFixed(
                         4
                       )}{' '}
-                      bilhete(s) premiado(s) · Mod. indep.:{' '}
-                      {(
-                        specializedAnalysis.simpleGamesComparison
-                          .independentModelAnyPrizeProbability * 100
-                      ).toPrecision(5)}
-                      %
+                      · E[secund.] ={' '}
+                      {specializedAnalysis.simpleGamesComparison.expectedSecondaryWinningGamesPerDraw.toFixed(
+                        4
+                      )}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="py-3 pr-4 text-neutral-300">
+                      P(≥ 1 prêmio secundário) / P(≥ 1 prêmio qualquer)
+                    </td>
+                    <td className="py-3 px-4 font-mono-tabular text-[#E5C158]">
+                      Exata no volante: {(specializedAnalysis.anyPrize.probability * 100).toPrecision(5)}%
+                    </td>
+                    <td className="py-3 pl-4 text-neutral-200">
+                      {specializedAnalysis.simpleGamesComparison.exactUnionAnalysis ? (
+                        <div className="space-y-1 font-mono-tabular">
+                          <div className="text-[#C4B5FD]">
+                            União exata (qualquer):{' '}
+                            {(
+                              specializedAnalysis.simpleGamesComparison.exactUnionAnalysis
+                                .anyPrizeUnion.probability * 100
+                            ).toPrecision(5)}
+                            % (
+                            {formatOddsDisplay(
+                              specializedAnalysis.simpleGamesComparison.exactUnionAnalysis
+                                .anyPrizeUnion.probability,
+                              specializedAnalysis.simpleGamesComparison.exactUnionAnalysis
+                                .anyPrizeUnion.oddsOneIn
+                            )}
+                            )
+                          </div>
+                          <div className="text-neutral-300">
+                            União exata (secundário):{' '}
+                            {(
+                              specializedAnalysis.simpleGamesComparison.exactUnionAnalysis
+                                .secondaryPrizeUnion.probability * 100
+                            ).toPrecision(5)}
+                            % (
+                            {formatOddsDisplay(
+                              specializedAnalysis.simpleGamesComparison.exactUnionAnalysis
+                                .secondaryPrizeUnion.probability,
+                              specializedAnalysis.simpleGamesComparison.exactUnionAnalysis
+                                .secondaryPrizeUnion.oddsOneIn
+                            )}
+                            )
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-amber-300">
+                          Depende da sobreposição (informe as combinações abaixo)
+                        </span>
+                      )}
                     </td>
                   </tr>
                 </tbody>
               </table>
             </div>
 
-            {specializedAnalysis.multipleBet.isMultipleBet && (
-              <div className="border-t border-white/8 pt-4 space-y-2">
-                <h3 className="text-xs font-semibold text-[#E5C158]">
-                  Desdobramento de Prêmios em Aposta Múltipla ({safeChosen} dezenas)
-                </h3>
-                <p className="text-xs text-neutral-400">
-                  Ao acertar <span className="text-neutral-200">h</span> dezenas no volante múltiplo,
-                  o bilhete acumula múltiplas premiações simples conforme a identidade de Vandermonde:
-                </p>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 pt-1">
-                  {specializedAnalysis.prizeTiers.map((tier) => (
-                    <div
-                      key={tier.hits}
-                      className="rounded-lg border border-white/8 bg-[#0A0B0E] px-3.5 py-2.5 text-xs"
+            {/* Painel explícito de combinações para união exata sem falsa independência */}
+            <div className="rounded-lg border border-white/10 bg-[#0A0B0E] p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-xs font-semibold text-[#C4B5FD]">
+                    União Exata para Combinações Explícitas (Sem Suposição Falsa de Independência)
+                  </h3>
+                  <p className="mt-0.5 text-[11px] text-neutral-400">
+                    {specializedAnalysis.simpleGamesComparison.overlapDependencyNotice}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {ruleUniverseSize >= 2 * safeDrawn && (
+                    <button
+                      type="button"
+                      onClick={() => applyExampleBets('disjoint')}
+                      className="rounded border border-white/15 bg-[#181B22] px-2.5 py-1 text-[11px] text-neutral-200 hover:border-[#D4AF37]/50 cursor-pointer"
                     >
-                      <p className="font-medium text-[#F1F2F4]">
-                        Se acertar {tier.hits} ({tier.tierName})
-                      </p>
-                      <p className="mt-1 font-mono-tabular text-[#E5C158]">
-                        {tier.embeddedSimpleWins
-                          .map(
-                            (w) =>
-                              `${formatBigIntPtBr(w.winningSimpleCombinations)}× ${w.tierName}`
-                          )
-                          .join(' + ')}
-                      </p>
-                    </div>
-                  ))}
+                      Exemplo 2 jogos disjuntos
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => applyExampleBets('high_overlap')}
+                    className="rounded border border-white/15 bg-[#181B22] px-2.5 py-1 text-[11px] text-neutral-200 hover:border-[#8B5CF6]/60 cursor-pointer"
+                  >
+                    Exemplo 2 jogos alta sobreposição
+                  </button>
                 </div>
               </div>
-            )}
 
-            <p className="text-[11px] text-neutral-400 border-t border-white/8 pt-3">
-              Fonte oficial dos preços: {specializedAnalysis.multipleBet.priceSource ?? 'Caixa'} ·{' '}
-              {specializedAnalysis.simpleGamesComparison.equiprobabilityNotice}
-            </p>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-12 md:items-start">
+                <div className="md:col-span-7 space-y-2">
+                  <textarea
+                    rows={3}
+                    aria-label="Combinações simples explícitas"
+                    placeholder={`Informe de 1 a 12 combinações de ${safeDrawn} dezenas (1 por linha, ex: 01 02 03 ...)`}
+                    value={simpleBetsText}
+                    onChange={(e) => setSimpleBetsText(e.target.value)}
+                    className="w-full rounded-lg border border-white/12 bg-[#12141A] p-2.5 font-mono-tabular text-xs text-[#F1F2F4] focus:border-[#D4AF37] focus:outline-none"
+                  />
+                  {simpleBetsInputError && (
+                    <p className="text-xs text-amber-300">{simpleBetsInputError}</p>
+                  )}
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleApplySimpleBets}
+                      className="rounded-lg border border-[#D4AF37]/50 bg-[#181B22] px-3 py-1.5 text-xs font-medium text-[#E5C158] hover:border-[#D4AF37] cursor-pointer"
+                    >
+                      Calcular União Exata (Python)
+                    </button>
+                    {appliedSimpleBets && (
+                      <button
+                        type="button"
+                        onClick={handleClearSimpleBets}
+                        className="rounded-lg border border-white/15 bg-[#12141A] px-3 py-1.5 text-xs text-neutral-300 hover:text-white cursor-pointer"
+                      >
+                        Limpar Combinações
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {specializedAnalysis.simpleGamesComparison.exactUnionAnalysis && (
+                  <div className="md:col-span-5 rounded-lg border border-[#8B5CF6]/30 bg-[#12141A] p-3.5 text-xs space-y-2">
+                    <p className="font-medium text-[#C4B5FD]">
+                      Estrutura de Sobreposição ({specializedAnalysis.simpleGamesComparison.exactUnionAnalysis.gamesCount} jogos)
+                    </p>
+                    <p className="font-mono-tabular text-[11px] text-neutral-300">
+                      Pares:{' '}
+                      {
+                        specializedAnalysis.simpleGamesComparison.exactUnionAnalysis
+                          .pairwiseOverlapSummary.pairCount
+                      }{' '}
+                      · Sobreposição:{' '}
+                      {
+                        specializedAnalysis.simpleGamesComparison.exactUnionAnalysis
+                          .pairwiseOverlapSummary.minOverlap
+                      }
+                      ..
+                      {
+                        specializedAnalysis.simpleGamesComparison.exactUnionAnalysis
+                          .pairwiseOverlapSummary.maxOverlap
+                      }{' '}
+                      (média{' '}
+                      {specializedAnalysis.simpleGamesComparison.exactUnionAnalysis.pairwiseOverlapSummary.avgOverlap.toFixed(
+                        2
+                      )}
+                      ) · Disjuntos:{' '}
+                      {
+                        specializedAnalysis.simpleGamesComparison.exactUnionAnalysis
+                          .pairwiseOverlapSummary.disjointPairsCount
+                      }
+                    </p>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedUnionMemory((prev) => (prev === 'any' ? 'none' : 'any'))
+                        }
+                        className="text-[11px] text-[#E5C158] hover:underline cursor-pointer"
+                      >
+                        {expandedUnionMemory === 'any'
+                          ? 'Ocultar memória (União Qualquer)'
+                          : 'Memória (União Qualquer)'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedUnionMemory((prev) =>
+                            prev === 'secondary' ? 'none' : 'secondary'
+                          )
+                        }
+                        className="text-[11px] text-[#C4B5FD] hover:underline cursor-pointer"
+                      >
+                        {expandedUnionMemory === 'secondary'
+                          ? 'Ocultar memória (União Secundária)'
+                          : 'Memória (União Secundária)'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {expandedUnionMemory !== 'none' &&
+                specializedAnalysis.simpleGamesComparison.exactUnionAnalysis && (
+                  <div className="rounded-lg border border-[#D4AF37]/25 bg-[#12141A] p-4">
+                    <MemoryPanel
+                      memory={
+                        expandedUnionMemory === 'any'
+                          ? specializedAnalysis.simpleGamesComparison.exactUnionAnalysis
+                              .anyPrizeUnion.memory
+                          : specializedAnalysis.simpleGamesComparison.exactUnionAnalysis
+                              .secondaryPrizeUnion.memory
+                      }
+                    />
+                  </div>
+                )}
+            </div>
+
+            {/* Clareza A / B / C para Apostas Múltiplas */}
+            <div className="border-t border-white/8 pt-4 space-y-3">
+              <div>
+                <h3 className="text-xs font-semibold text-[#E5C158]">
+                  Aposta Múltipla ({safeChosen} dezenas): Separação A · B · C
+                </h3>
+                <p className="mt-1 text-xs text-neutral-400">
+                  Distingue explicitamente <strong className="text-neutral-200">A)</strong> a
+                  probabilidade de o volante acertar exatamente h dezenas sorteadas,{' '}
+                  <strong className="text-neutral-200">B)</strong> quantas apostas simples embutidas
+                  são premiadas (Vandermonde) + média esperada, e{' '}
+                  <strong className="text-neutral-200">C)</strong> a probabilidade exata de obter ao
+                  menos uma aposta simples premiada em cada faixa t.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 pt-1">
+                {specializedAnalysis.prizeTiers.map((tier) => (
+                  <div
+                    key={tier.hits}
+                    className="rounded-lg border border-white/8 bg-[#0A0B0E] p-3.5 text-xs space-y-2"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-[#F1F2F4]">
+                        {tier.tierName} (t = {tier.hits})
+                      </span>
+                      {tier.atLeastOneWin && (
+                        <button
+                          type="button"
+                          onClick={() => toggleTierAtLeastOne(tier.hits)}
+                          className="text-[11px] text-[#E5C158] hover:underline cursor-pointer"
+                        >
+                          {expandedTierAtLeastOne[tier.hits]
+                            ? 'Ocultar memória C'
+                            : 'Memória P(≥ 1)'}
+                        </button>
+                      )}
+                    </div>
+
+                    <p className="font-mono-tabular text-[11px] text-neutral-300">
+                      <span className="text-neutral-500">A. P(H_volante = {tier.hits}):</span>{' '}
+                      {(tier.probability * 100).toPrecision(5)}% (
+                      {formatOddsDisplay(tier.probability, tier.oddsOneIn)})
+                    </p>
+
+                    <p className="font-mono-tabular text-[11px] text-[#E5C158]">
+                      <span className="text-neutral-500">B. Embutidas se h={tier.hits}:</span>{' '}
+                      {tier.embeddedSimpleWins
+                        .map(
+                          (w) =>
+                            `${formatBigIntPtBr(w.winningSimpleCombinations)}× ${w.tierName}`
+                        )
+                        .join(' + ')}
+                      {tier.expectedEmbeddedWinsPerDraw !== undefined
+                        ? ` · E[prêmios] = ${tier.expectedEmbeddedWinsPerDraw.toPrecision(4)}`
+                        : ''}
+                    </p>
+
+                    {tier.atLeastOneWin && (
+                      <p className="font-mono-tabular text-[11px] text-[#C4B5FD]">
+                        <span className="text-neutral-500">
+                          C. P(≥ 1 na faixa {tier.tierName}):
+                        </span>{' '}
+                        {(tier.atLeastOneWin.probability * 100).toPrecision(5)}% (
+                        {formatOddsDisplay(
+                          tier.atLeastOneWin.probability,
+                          tier.atLeastOneWin.oddsOneIn
+                        )}
+                        ) · h ∈ {`{${tier.atLeastOneWin.triggeringVolanteHits.join(', ')}}`}
+                      </p>
+                    )}
+
+                    {tier.atLeastOneWin && expandedTierAtLeastOne[tier.hits] && (
+                      <div className="pt-2 border-t border-white/8">
+                        <MemoryPanel memory={tier.atLeastOneWin.memory} />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-amber-400/20 bg-[#0A0B0E] px-4 py-3 text-[11px] text-neutral-400 space-y-1">
+              <p className="text-amber-300/90 font-medium">
+                Nota metodológica sobre independência (apenas ilustrativa — NÃO exata):{' '}
+                <span className="font-mono-tabular">
+                  {(
+                    specializedAnalysis.simpleGamesComparison
+                      .illustrativeIndependentApproximation.value * 100
+                  ).toPrecision(5)}
+                  %
+                </span>
+              </p>
+              <p>
+                {
+                  specializedAnalysis.simpleGamesComparison.illustrativeIndependentApproximation
+                    .warning
+                }
+              </p>
+              <p className="pt-1 text-neutral-400">
+                Fonte oficial dos preços: {specializedAnalysis.multipleBet.priceSource ?? 'Caixa'} ·{' '}
+                {specializedAnalysis.simpleGamesComparison.equiprobabilityNotice}
+              </p>
+            </div>
           </section>
         )}
 
@@ -1178,7 +1983,8 @@ export const MathLabView: React.FC = () => {
                       <span className="text-[#F1F2F4]">
                         {formatBigIntPtBr(row.equivalentSimpleBets)}
                       </span>{' '}
-                      · Custo: <span className={accent}>{formatBrlFromCentsStr(row.totalCostCents)}</span>
+                      · Custo:{' '}
+                      <span className={accent}>{formatBrlFromCentsStr(row.totalCostCents)}</span>
                     </p>
                     <p className="font-mono-tabular text-neutral-300">
                       Faixa principal ({row.mainPrizeHits} acertos):{' '}
@@ -1252,7 +2058,7 @@ export const MathLabView: React.FC = () => {
           </section>
         )}
 
-      {/* Faixas de Premiação Oficiais (quando na aba principal da modalidade) */}
+      {/* Faixas de Premiação Oficiais com separação explícita A, B, C (aba principal da modalidade) */}
       {mode === 'modality' &&
         activeVerifiedRule &&
         specializedAnalysis &&
@@ -1264,8 +2070,10 @@ export const MathLabView: React.FC = () => {
                   Faixas Oficiais de Premiação — {selectedLotteryDetail?.name} ({safeChosen} dezenas)
                 </h2>
                 <p className="mt-0.5 text-xs text-neutral-400">
-                  Todas as faixas previstas nas regras oficiais vigentes com frações racionais e
-                  razão 1 em N.
+                  Separa explicitamente <span className="text-neutral-200">A)</span> P(H_volante =
+                  h), <span className="text-neutral-200">B)</span> apostas simples embutidas +
+                  esperado/sorteio e <span className="text-neutral-200">C)</span> P(≥ 1 prêmio na
+                  faixa t).
                 </p>
               </div>
               <span className="font-mono-tabular text-xs text-[#E5C158]">
@@ -1278,38 +2086,86 @@ export const MathLabView: React.FC = () => {
                 <thead className="border-b border-white/8 text-neutral-400">
                   <tr>
                     <th className="py-2 pr-3 font-medium">Faixa Oficial</th>
-                    <th className="py-2 px-3 font-medium">Acertos</th>
-                    <th className="py-2 px-3 font-medium">Fração Simplificada</th>
-                    <th className="py-2 px-3 font-medium">Prob. Aprox.</th>
-                    <th className="py-2 px-3 font-medium">Notação Científica</th>
-                    <th className="py-2 pl-3 text-right font-medium">Razão 1 em N</th>
+                    <th className="py-2 px-3 font-medium">A. P(H_volante = h)</th>
+                    <th className="py-2 px-3 font-medium">B. Embutidas (se H=h) · E[prêmios]</th>
+                    <th className="py-2 px-3 font-medium">C. P(≥ 1 aposta na faixa)</th>
+                    <th className="py-2 pl-3 text-right font-medium">Memória C</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/6">
                   {specializedAnalysis.prizeTiers.map((tier) => (
-                    <tr key={tier.hits} className="hover:bg-white/[0.02]">
-                      <td className="py-2.5 pr-3 font-medium text-[#F1F2F4]">
-                        {tier.tierName}
-                        {tier.isMainPrize ? (
-                          <span className="ml-2 text-[11px] text-[#E5C158]">· Principal</span>
-                        ) : null}
-                      </td>
-                      <td className="py-2.5 px-3 font-mono-tabular text-neutral-300">
-                        {tier.hits}
-                      </td>
-                      <td className="py-2.5 px-3 font-mono-tabular text-neutral-300">
-                        {tier.exactNumerator} / {formatBigIntPtBr(tier.exactDenominator)}
-                      </td>
-                      <td className="py-2.5 px-3 font-mono-tabular text-[#E5C158]">
-                        {(tier.probability * 100).toPrecision(6)}%
-                      </td>
-                      <td className="py-2.5 px-3 font-mono-tabular text-neutral-300">
-                        {tier.scientificNotation}
-                      </td>
-                      <td className="py-2.5 pl-3 text-right font-mono-tabular text-neutral-200 whitespace-nowrap">
-                        {formatOddsDisplay(tier.probability, tier.oddsOneIn)}
-                      </td>
-                    </tr>
+                    <React.Fragment key={tier.hits}>
+                      <tr className="hover:bg-white/[0.02]">
+                        <td className="py-2.5 pr-3 font-medium text-[#F1F2F4]">
+                          {tier.tierName} ({tier.hits} acertos)
+                          {tier.isMainPrize ? (
+                            <span className="ml-2 text-[11px] text-[#E5C158]">· Principal</span>
+                          ) : null}
+                          <div className="font-mono-tabular text-[11px] font-normal text-neutral-400">
+                            {tier.exactNumerator} / {formatBigIntPtBr(tier.exactDenominator)}
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3 font-mono-tabular text-[#E5C158] whitespace-nowrap">
+                          {(tier.probability * 100).toPrecision(6)}%
+                          <div className="text-[11px] text-neutral-400">
+                            {formatOddsDisplay(tier.probability, tier.oddsOneIn)}
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3 font-mono-tabular text-neutral-200">
+                          <div>
+                            {tier.embeddedSimpleWins
+                              .map(
+                                (w) =>
+                                  `${formatBigIntPtBr(w.winningSimpleCombinations)}× ${w.tierName}`
+                              )
+                              .join(' + ')}
+                          </div>
+                          {tier.expectedEmbeddedWinsPerDraw !== undefined && (
+                            <div className="text-[11px] text-neutral-400">
+                              E[ganhos] = {tier.expectedEmbeddedWinsPerDraw.toPrecision(4)}/sorteio
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono-tabular text-[#C4B5FD] whitespace-nowrap">
+                          {tier.atLeastOneWin ? (
+                            <>
+                              <div>{(tier.atLeastOneWin.probability * 100).toPrecision(6)}%</div>
+                              <div className="text-[11px] text-neutral-400">
+                                {formatOddsDisplay(
+                                  tier.atLeastOneWin.probability,
+                                  tier.atLeastOneWin.oddsOneIn
+                                )}{' '}
+                                · h ∈ {`{${tier.atLeastOneWin.triggeringVolanteHits.join(', ')}}`}
+                              </div>
+                            </>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                        <td className="py-2.5 pl-3 text-right whitespace-nowrap">
+                          {tier.atLeastOneWin && (
+                            <button
+                              type="button"
+                              aria-expanded={Boolean(expandedTierAtLeastOne[tier.hits])}
+                              aria-label={`Memória P(≥ 1) para ${tier.tierName ?? tier.hits}`}
+                              onClick={() => toggleTierAtLeastOne(tier.hits)}
+                              className="inline-flex items-center gap-1 rounded border border-white/12 bg-[#181B22] px-2 py-1 text-[11px] text-neutral-200 hover:border-[#D4AF37]/50 hover:text-[#E5C158] cursor-pointer"
+                            >
+                              <span>
+                                {expandedTierAtLeastOne[tier.hits] ? 'Ocultar' : 'Memória P(≥ 1)'}
+                              </span>
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                      {tier.atLeastOneWin && expandedTierAtLeastOne[tier.hits] && (
+                        <tr className="bg-[#0A0B0E]/80">
+                          <td colSpan={5} className="p-4">
+                            <MemoryPanel memory={tier.atLeastOneWin.memory} />
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   ))}
                 </tbody>
               </table>
@@ -1317,8 +2173,10 @@ export const MathLabView: React.FC = () => {
           </section>
         )}
 
-      {/* Explorador Combinatório Interativo (sempre acessível para Parâmetros Livres e aba Probabilidades) */}
-      {(mode === 'free' || specializedTab === 'probabilities' || modalityAwaitingRules) && (
+      {/* Explorador Combinatório Interativo (Parâmetros Livres locais OU Modalidade com dados vindos do Python) */}
+      {(mode === 'free' ||
+        modalityAwaitingRules ||
+        (specializedAnalysis && specializedTab === 'probabilities')) && (
         <section className="grid grid-cols-1 gap-6 lg:grid-cols-12">
           <div className="rounded-xl border border-white/8 bg-[#12141A] p-6 lg:col-span-4 space-y-5">
             <div className="flex items-center justify-between gap-2">
@@ -1333,14 +2191,18 @@ export const MathLabView: React.FC = () => {
               <label className="block">
                 <div className="flex justify-between text-xs text-neutral-300">
                   <span>Universo Discreto (N)</span>
-                  <span className="font-mono-tabular text-[#E5C158]">{universeSize}</span>
+                  <span className="font-mono-tabular text-[#E5C158]">{ruleUniverseSize}</span>
                 </div>
                 <input
                   type="range"
-                  min={mode === 'modality' && activeVerifiedRule ? Math.min(10, universeSize) : 10}
-                  max={mode === 'modality' && activeVerifiedRule ? Math.max(100, universeSize) : 100}
+                  min={mode === 'modality' && activeVerifiedRule ? Math.min(10, ruleUniverseSize) : 10}
+                  max={
+                    mode === 'modality' && activeVerifiedRule
+                      ? Math.max(100, ruleUniverseSize)
+                      : 100
+                  }
                   disabled={mode === 'modality' && Boolean(activeVerifiedRule)}
-                  value={universeSize}
+                  value={ruleUniverseSize}
                   onChange={(e) => setUniverseSize(Number(e.target.value))}
                   className="mt-2 w-full accent-[#D4AF37] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 />
@@ -1357,7 +2219,7 @@ export const MathLabView: React.FC = () => {
                   max={
                     mode === 'modality' && activeVerifiedRule
                       ? Math.max(20, safeDrawn)
-                      : Math.min(20, universeSize)
+                      : Math.min(20, ruleUniverseSize)
                   }
                   disabled={mode === 'modality' && Boolean(activeVerifiedRule)}
                   value={safeDrawn}
@@ -1395,9 +2257,9 @@ export const MathLabView: React.FC = () => {
                     Seleção rápida de dezenas (m)
                   </span>
                   <div className="flex flex-wrap gap-1.5">
-                    {(specializedAnalysis
+                    {(mode === 'modality' && specializedAnalysis
                       ? specializedAnalysis.comparisonRows.map((r) => r.chosenCount)
-                      : chosenComparisonRows.map((r) => r.chosen)
+                      : freeChosenComparisonRows.map((r) => r.chosen)
                     ).map((mVal) => (
                       <button
                         key={mVal}
@@ -1419,12 +2281,16 @@ export const MathLabView: React.FC = () => {
 
             <div className="border-t border-white/8 pt-4">
               <span className="text-xs text-neutral-400">
-                Combinações Possíveis Exatas C({universeSize}, {safeChosen})
+                Combinações Possíveis Exatas C({ruleUniverseSize}, {safeChosen})
               </span>
               <p className="mt-1 font-mono-tabular text-lg font-semibold text-[#F1F2F4] break-all">
                 {modalityAwaitingRules
                   ? 'Aguardando regras verificadas'
-                  : totalCombinations.toLocaleString('pt-BR')}
+                  : mode === 'modality'
+                    ? specializedAnalysis
+                      ? formatBigIntPtBr(specializedAnalysis.totalChosenCombinations)
+                      : 'Aguardando motor Python...'
+                    : freeTotalCombinations.toLocaleString('pt-BR')}
               </p>
             </div>
 
@@ -1444,12 +2310,12 @@ export const MathLabView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => handleTestPythonEngine('specialized')}
-                  disabled={pythonState.status === 'loading'}
+                  disabled={specializedFetch.status === 'loading'}
                   className="w-full rounded-lg border border-[#D4AF37]/40 bg-[#181B22] px-4 py-2 text-xs font-medium text-[#E5C158] transition-colors hover:border-[#D4AF37] disabled:opacity-50 cursor-pointer"
                 >
-                  {pythonState.status === 'loading' && pythonState.endpointUsed === 'specialized'
+                  {specializedFetch.status === 'loading'
                     ? 'Executando Modelo Especializado...'
-                    : 'Validar Modelo Especializado no Python'}
+                    : 'Revalidar Modelo Especializado no Python'}
                 </button>
               )}
 
@@ -1470,7 +2336,7 @@ export const MathLabView: React.FC = () => {
           <div className="rounded-xl border border-white/8 bg-[#12141A] p-6 lg:col-span-8">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="font-display text-sm font-semibold text-[#F1F2F4]">
-                Distribuição Hipergeométrica P(X = h) e Memória de Cálculo
+                Distribuição Hipergeométrica P(H_volante = h) e Memória de Cálculo
               </h2>
               <span className="font-mono-tabular text-xs text-neutral-400">
                 Clique em Detalhes para inspecionar fórmula, fração e explicação
@@ -1498,118 +2364,115 @@ export const MathLabView: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/6">
-                    {(specializedAnalysis ? specializedAnalysis.distribution : distribution).map(
-                      (row) => {
-                        const isExpanded = Boolean(expandedHits[row.hits]);
-                        const tierLabel =
-                          'tierName' in row && row.tierName ? ` · ${row.tierName}` : '';
-                        return (
-                          <React.Fragment key={row.hits}>
-                            <tr className="hover:bg-white/[0.02]">
-                              <td className="py-2.5 pr-3 font-mono-tabular text-neutral-200 whitespace-nowrap">
-                                {row.hits}
-                                {tierLabel ? (
-                                  <span className="text-[#E5C158]">{tierLabel}</span>
-                                ) : null}
-                              </td>
-                              <td className="py-2.5 px-3 font-mono-tabular text-[#E5C158]">
-                                {(row.probability * 100).toPrecision(6)}%
-                              </td>
-                              <td className="py-2.5 px-3 font-mono-tabular text-neutral-300">
-                                {row.scientificNotation}
-                              </td>
-                              <td className="py-2.5 px-3 text-neutral-400 whitespace-nowrap">
-                                {row.isImpossible
-                                  ? 'Zero exato'
-                                  : row.precisionClassification === 'exact'
-                                    ? 'Exato'
-                                    : 'Racional exato + aprox. float'}
-                              </td>
-                              <td className="py-2.5 px-3 text-right font-mono-tabular text-neutral-300 whitespace-nowrap">
-                                {formatOddsDisplay(row.probability, row.oddsOneIn)}
-                              </td>
-                              <td className="py-2.5 pl-3 text-right whitespace-nowrap">
-                                <button
-                                  type="button"
-                                  aria-expanded={isExpanded}
-                                  aria-label={`Detalhes matemáticos para ${row.hits} acertos`}
-                                  onClick={() => toggleExpandedHit(row.hits)}
-                                  className="inline-flex items-center gap-1 rounded border border-white/12 bg-[#181B22] px-2 py-1 text-[11px] text-neutral-200 hover:border-[#D4AF37]/50 hover:text-[#E5C158] cursor-pointer"
-                                >
-                                  <span>{isExpanded ? 'Ocultar' : 'Detalhes'}</span>
-                                  {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                                </button>
+                    {(mode === 'modality' && specializedAnalysis
+                      ? specializedAnalysis.distribution
+                      : freeDistribution
+                    ).map((row) => {
+                      const isExpanded = Boolean(expandedHits[row.hits]);
+                      const tierLabel =
+                        'tierName' in row && row.tierName ? ` · ${row.tierName}` : '';
+                      return (
+                        <React.Fragment key={row.hits}>
+                          <tr className="hover:bg-white/[0.02]">
+                            <td className="py-2.5 pr-3 font-mono-tabular text-neutral-200 whitespace-nowrap">
+                              {row.hits}
+                              {tierLabel ? (
+                                <span className="text-[#E5C158]">{tierLabel}</span>
+                              ) : null}
+                            </td>
+                            <td className="py-2.5 px-3 font-mono-tabular text-[#E5C158]">
+                              {(row.probability * 100).toPrecision(6)}%
+                            </td>
+                            <td className="py-2.5 px-3 font-mono-tabular text-neutral-300">
+                              {row.scientificNotation}
+                            </td>
+                            <td className="py-2.5 px-3 text-neutral-400 whitespace-nowrap">
+                              {row.isImpossible
+                                ? 'Zero exato'
+                                : row.precisionClassification === 'exact'
+                                  ? 'Exato'
+                                  : 'Racional exato + aprox. float'}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono-tabular text-neutral-300 whitespace-nowrap">
+                              {formatOddsDisplay(row.probability, row.oddsOneIn)}
+                            </td>
+                            <td className="py-2.5 pl-3 text-right whitespace-nowrap">
+                              <button
+                                type="button"
+                                aria-expanded={isExpanded}
+                                aria-label={`Detalhes matemáticos para ${row.hits} acertos`}
+                                onClick={() => toggleExpandedHit(row.hits)}
+                                className="inline-flex items-center gap-1 rounded border border-white/12 bg-[#181B22] px-2 py-1 text-[11px] text-neutral-200 hover:border-[#D4AF37]/50 hover:text-[#E5C158] cursor-pointer"
+                              >
+                                <span>{isExpanded ? 'Ocultar' : 'Detalhes'}</span>
+                                {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                              </button>
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr className="bg-[#0A0B0E]/80">
+                              <td colSpan={6} className="p-4">
+                                {'memory' in row ? (
+                                  <MemoryPanel memory={(row as SpecializedHitPoint).memory} />
+                                ) : (
+                                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 text-xs">
+                                    <div className="space-y-1.5">
+                                      <p className="text-[11px] font-medium text-[#E5C158]">
+                                        Representação Racional Exata (BigInt)
+                                      </p>
+                                      <p className="font-mono-tabular text-neutral-300 break-all">
+                                        <span className="text-neutral-500">Numerador exato:</span>{' '}
+                                        {formatBigIntPtBr(row.rawNumerator)}
+                                      </p>
+                                      <p className="font-mono-tabular text-neutral-300 break-all">
+                                        <span className="text-neutral-500">Denominador exato:</span>{' '}
+                                        {formatBigIntPtBr(row.rawDenominator)}
+                                      </p>
+                                      <p className="font-mono-tabular text-neutral-200 break-all">
+                                        <span className="text-neutral-500">
+                                          Fração simplificada (MDC):
+                                        </span>{' '}
+                                        {row.exactNumerator} / {row.exactDenominator}
+                                      </p>
+                                    </div>
+
+                                    <div className="space-y-1.5">
+                                      <p className="text-[11px] font-medium text-[#8B5CF6]">
+                                        Aproximações Numéricas & Fórmula
+                                      </p>
+                                      <p className="font-mono-tabular text-neutral-300">
+                                        <span className="text-neutral-500">
+                                          Prob. percentual aprox.:
+                                        </span>{' '}
+                                        {(row.probability * 100).toPrecision(8)}%
+                                      </p>
+                                      <p className="font-mono-tabular text-neutral-300">
+                                        <span className="text-neutral-500">
+                                          Notação científica:
+                                        </span>{' '}
+                                        {row.scientificNotation} ·{' '}
+                                        <span className="text-neutral-500">Razão aprox.:</span>{' '}
+                                        {formatOddsDisplay(row.probability, row.oddsOneIn)}
+                                      </p>
+                                      <p className="font-mono-tabular text-neutral-300 break-words">
+                                        <span className="text-neutral-500">Fórmula:</span> P(X=
+                                        {row.hits}) = [C(k, h) · C(N−k, m−h)] / C(N, m) = [C(
+                                        {safeDrawn}, {row.hits}) · C({universeSize - safeDrawn},{' '}
+                                        {safeChosen - row.hits})] / C({universeSize}, {safeChosen})
+                                      </p>
+                                      <p className="font-mono-tabular text-neutral-400">
+                                        <span className="text-neutral-500">Parâmetros:</span> N=
+                                        {universeSize}, k={safeDrawn}, m={safeChosen}, h={row.hits}
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
                               </td>
                             </tr>
-                            {isExpanded && (
-                              <tr className="bg-[#0A0B0E]/80">
-                                <td colSpan={6} className="p-4">
-                                  {'memory' in row ? (
-                                    <MemoryPanel memory={(row as SpecializedHitPoint).memory} />
-                                  ) : (
-                                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 text-xs">
-                                      <div className="space-y-1.5">
-                                        <p className="text-[11px] font-medium text-[#E5C158]">
-                                          Representação Racional Exata (BigInt)
-                                        </p>
-                                        <p className="font-mono-tabular text-neutral-300 break-all">
-                                          <span className="text-neutral-500">Numerador exato:</span>{' '}
-                                          {formatBigIntPtBr(row.rawNumerator)}
-                                        </p>
-                                        <p className="font-mono-tabular text-neutral-300 break-all">
-                                          <span className="text-neutral-500">
-                                            Denominador exato:
-                                          </span>{' '}
-                                          {formatBigIntPtBr(row.rawDenominator)}
-                                        </p>
-                                        <p className="font-mono-tabular text-neutral-200 break-all">
-                                          <span className="text-neutral-500">
-                                            Fração simplificada (MDC):
-                                          </span>{' '}
-                                          {row.exactNumerator} / {row.exactDenominator}
-                                        </p>
-                                      </div>
-
-                                      <div className="space-y-1.5">
-                                        <p className="text-[11px] font-medium text-[#8B5CF6]">
-                                          Aproximações Numéricas & Fórmula
-                                        </p>
-                                        <p className="font-mono-tabular text-neutral-300">
-                                          <span className="text-neutral-500">
-                                            Prob. percentual aprox.:
-                                          </span>{' '}
-                                          {(row.probability * 100).toPrecision(8)}%
-                                        </p>
-                                        <p className="font-mono-tabular text-neutral-300">
-                                          <span className="text-neutral-500">
-                                            Notação científica:
-                                          </span>{' '}
-                                          {row.scientificNotation} ·{' '}
-                                          <span className="text-neutral-500">Razão aprox.:</span>{' '}
-                                          {formatOddsDisplay(row.probability, row.oddsOneIn)}
-                                        </p>
-                                        <p className="font-mono-tabular text-neutral-300 break-words">
-                                          <span className="text-neutral-500">Fórmula:</span> P(X=
-                                          {row.hits}) = [C(k, h) · C(N−k, m−h)] / C(N, m) = [C(
-                                          {safeDrawn}, {row.hits}) · C({universeSize - safeDrawn},{' '}
-                                          {safeChosen - row.hits})] / C({universeSize},{' '}
-                                          {safeChosen})
-                                        </p>
-                                        <p className="font-mono-tabular text-neutral-400">
-                                          <span className="text-neutral-500">Parâmetros:</span> N=
-                                          {universeSize}, k={safeDrawn}, m={safeChosen}, h=
-                                          {row.hits}
-                                        </p>
-                                      </div>
-                                    </div>
-                                  )}
-                                </td>
-                              </tr>
-                            )}
-                          </React.Fragment>
-                        );
-                      }
-                    )}
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1618,8 +2481,8 @@ export const MathLabView: React.FC = () => {
         </section>
       )}
 
-      {/* Comparação rápida entre diferentes quantidades de dezenas */}
-      {!modalityAwaitingRules && (mode === 'free' || specializedTab === 'probabilities') && (
+      {/* Comparação rápida entre quantidades de dezenas no modo Parâmetros Livres (local) */}
+      {mode === 'free' && (
         <section className="rounded-xl border border-white/8 bg-[#12141A] p-6 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
@@ -1632,7 +2495,7 @@ export const MathLabView: React.FC = () => {
               </p>
             </div>
             <span className="font-mono-tabular text-xs text-neutral-400">
-              Cálculo exato BigInt
+              Cálculo exato BigInt (Parâmetros Livres)
             </span>
           </div>
 
@@ -1650,7 +2513,7 @@ export const MathLabView: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/6">
-                {chosenComparisonRows.map((item) => (
+                {freeChosenComparisonRows.map((item) => (
                   <tr
                     key={item.chosen}
                     className={item.isSelected ? 'bg-[#D4AF37]/[0.06]' : 'hover:bg-white/[0.02]'}
@@ -1693,9 +2556,9 @@ export const MathLabView: React.FC = () => {
             Motor Científico Python (`/math_engine`)
           </h3>
           <p className="mt-2 text-xs leading-relaxed text-neutral-400">
-            Os modelos especializados (`/v1/probabilities/specialized`) e teóricos executam em
-            aritmética racional exata, com validação Zod e auditoria matemática de parâmetros,
-            frações, custos e invariantes pelo backend Node.js.
+            Os modelos especializados (`/api/math/python/specialized`) executam em aritmética
+            racional exata no Python FastAPI com auditoria matemática pelo backend Node.js.
+            Indisponibilidades nunca são mascaradas localmente.
           </p>
         </div>
 

@@ -20,6 +20,7 @@ class _PreparedUnverifiedModel(BaseLotteryMathModel):
         price_updated_at: Optional[str],
         price_source: Optional[str],
         simple_games_count: Optional[int],
+        simple_bets: Optional[List[List[int]]] = None,
     ) -> Dict[str, Any]:
         raise NotImplementedError(
             f"O modelo estrutural '{self.model_type}' para '{lottery_code}' está preparado na arquitetura, "

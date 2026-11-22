@@ -663,6 +663,19 @@ const pythonCalculationMemorySchema = z.object({
   plain_explanation: z.string(),
 });
 
+const pythonTierAtLeastOneWinSchema = z.object({
+  triggering_volante_hits: z.array(z.number().int().min(0)),
+  probability: z.number().finite().min(0).max(1),
+  raw_numerator: z.string().regex(/^\d+$/),
+  raw_denominator: z.string().regex(/^\d+$/),
+  exact_numerator: z.string().regex(/^\d+$/),
+  exact_denominator: z.string().regex(/^\d+$/),
+  scientific_notation: z.string(),
+  odds_one_in: z.string().nullable(),
+  precision_classification: z.enum(['exact', 'exact_rational_with_float_approximation']),
+  memory: pythonCalculationMemorySchema,
+});
+
 const pythonSpecializedHitSchema = pythonHitDetailSchema.extend({
   odds_one_in: z.string().nullable(),
   tier_name: z.string().nullable(),
@@ -675,6 +688,8 @@ const pythonSpecializedHitSchema = pythonHitDetailSchema.extend({
       winning_simple_combinations: z.string().regex(/^\d+$/),
     })
   ),
+  expected_embedded_wins_per_draw: z.number().finite().min(0).optional(),
+  at_least_one_win: pythonTierAtLeastOneWinSchema.optional(),
   memory: pythonCalculationMemorySchema,
 });
 
@@ -689,6 +704,31 @@ const pythonAggregateProbSchema = z.object({
   odds_one_in: z.string().nullable(),
   precision_classification: z.enum(['exact', 'exact_rational_with_float_approximation']),
   memory: pythonCalculationMemorySchema,
+});
+
+const pythonUnionEventSchema = z.object({
+  raw_numerator: z.string().regex(/^\d+$/),
+  raw_denominator: z.string().regex(/^\d+$/),
+  exact_numerator: z.string().regex(/^\d+$/),
+  exact_denominator: z.string().regex(/^\d+$/),
+  probability: z.number().finite().min(0).max(1),
+  scientific_notation: z.string(),
+  odds_one_in: z.string().nullable(),
+  memory: pythonCalculationMemorySchema.optional(),
+});
+
+const pythonExactUnionAnalysisSchema = z.object({
+  games_count: z.number().int().min(1),
+  pairwise_overlap_summary: z.object({
+    pair_count: z.number().int().min(0),
+    min_overlap: z.number().int().min(0),
+    max_overlap: z.number().int().min(0),
+    avg_overlap: z.number().finite().min(0),
+    disjoint_pairs_count: z.number().int().min(0),
+  }),
+  main_prize_union: pythonUnionEventSchema,
+  any_prize_union: pythonUnionEventSchema.extend({ memory: pythonCalculationMemorySchema }),
+  secondary_prize_union: pythonUnionEventSchema.extend({ memory: pythonCalculationMemorySchema }),
 });
 
 const pythonSpecializedResponseSchema = z.object({
@@ -738,7 +778,15 @@ const pythonSpecializedResponseSchema = z.object({
       odds_one_in: z.string().nullable(),
     }),
     expected_winning_games_per_draw: z.number().finite().min(0),
-    independent_model_any_prize_probability: z.number().finite().min(0).max(1),
+    expected_secondary_winning_games_per_draw: z.number().finite().min(0),
+    secondary_prize_status: z.enum(['exact_union_computed', 'requires_explicit_combinations']),
+    overlap_dependency_notice: z.string(),
+    exact_union_analysis: pythonExactUnionAnalysisSchema.nullable(),
+    illustrative_independent_approximation: z.object({
+      value: z.number().finite().min(0).max(1),
+      is_exact: z.literal(false),
+      warning: z.string(),
+    }),
     equiprobability_notice: z.string(),
   }),
   comparison_rows: z.array(
@@ -772,6 +820,7 @@ export function validatePythonSpecializedIntegrity(
     drawnCount: number;
     chosenCount: number;
     simpleBetPriceCents: number | null;
+    simpleBetsCount?: number;
   },
   data: PythonSpecializedResponse
 ): void {
@@ -840,6 +889,77 @@ export function validatePythonSpecializedIntegrity(
       'Invariante P(Premiação) + P(Sem Prêmio) = 1/1 violada na resposta Python.'
     );
   }
+
+  // Verifica consistência racional de at_least_one_win em cada faixa de prêmio
+  const totalChosen = BigInt(data.total_combinations);
+  for (const tier of data.prize_tiers) {
+    if (tier.at_least_one_win) {
+      const alo = tier.at_least_one_win;
+      const rawNum = BigInt(alo.raw_numerator);
+      const rawDen = BigInt(alo.raw_denominator);
+      const exNum = BigInt(alo.exact_numerator);
+      const exDen = BigInt(alo.exact_denominator);
+      if (rawDen !== totalChosen || exDen <= 0n) {
+        throw new MathEngineError(
+          'MATH_ENGINE_INTEGRITY_ERROR',
+          502,
+          `Denominador inconsistente em at_least_one_win para ${tier.hits} acertos.`
+        );
+      }
+      if (gcdBigInt(exNum, exDen) !== 1n || exNum * rawDen !== rawNum * exDen) {
+        throw new MathEngineError(
+          'MATH_ENGINE_INTEGRITY_ERROR',
+          502,
+          `Fração irredutível inconsistente em at_least_one_win para ${tier.hits} acertos.`
+        );
+      }
+    }
+  }
+
+  // Verifica invariantes da união exata quando simple_bets foram fornecidos
+  const union = data.simple_games_comparison.exact_union_analysis;
+  if (params.simpleBetsCount !== undefined) {
+    if (!union || union.games_count !== params.simpleBetsCount) {
+      throw new MathEngineError(
+        'MATH_ENGINE_INTEGRITY_ERROR',
+        502,
+        'Análise de união exata ausente ou divergente da quantidade de combinações enviadas.'
+      );
+    }
+  }
+  if (union) {
+    const events = [union.main_prize_union, union.any_prize_union, union.secondary_prize_union];
+    for (const ev of events) {
+      const rNum = BigInt(ev.raw_numerator);
+      const rDen = BigInt(ev.raw_denominator);
+      const eNum = BigInt(ev.exact_numerator);
+      const eDen = BigInt(ev.exact_denominator);
+      if (rDen !== expectedSpaceSimple || eDen <= 0n) {
+        throw new MathEngineError(
+          'MATH_ENGINE_INTEGRITY_ERROR',
+          502,
+          'Denominador divergente de C(N, k) na união exata de apostas simples.'
+        );
+      }
+      if (gcdBigInt(eNum, eDen) !== 1n || eNum * rDen !== rNum * eDen) {
+        throw new MathEngineError(
+          'MATH_ENGINE_INTEGRITY_ERROR',
+          502,
+          'Fração simplificada inconsistente na união exata de apostas simples.'
+        );
+      }
+    }
+    if (
+      BigInt(union.secondary_prize_union.raw_numerator) >
+      BigInt(union.any_prize_union.raw_numerator)
+    ) {
+      throw new MathEngineError(
+        'MATH_ENGINE_INTEGRITY_ERROR',
+        502,
+        'Invariante violada: união secundária excede união de qualquer premiação.'
+      );
+    }
+  }
 }
 
 export async function requestPythonSpecializedProbability(params: {
@@ -860,6 +980,7 @@ export async function requestPythonSpecializedProbability(params: {
   priceUpdatedAt: string | null;
   priceSource: string | null;
   simpleGamesCount?: number;
+  simpleBets?: number[][];
 }) {
   validateCombinatorialParams(params.universeSize, params.drawnCount, params.chosenCount);
   const baseUrl = resolvePythonBaseUrl();
@@ -893,6 +1014,7 @@ export async function requestPythonSpecializedProbability(params: {
         ...(params.simpleGamesCount !== undefined
           ? { simple_games_count: params.simpleGamesCount }
           : {}),
+        ...(params.simpleBets !== undefined ? { simple_bets: params.simpleBets } : {}),
       }),
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -908,6 +1030,17 @@ export async function requestPythonSpecializedProbability(params: {
         ? `Motor matemático Python excedeu o tempo limite de ${timeoutMs}ms.`
         : 'Motor matemático Python indisponível no momento.',
       { cause: error }
+    );
+  }
+
+  if (response.status === 404) {
+    const errBody = await response.json().catch(() => ({}));
+    throw new MathEngineError(
+      'LOTTERY_NOT_REGISTERED',
+      404,
+      typeof errBody.detail === 'string'
+        ? errBody.detail
+        : 'Modalidade não registrada no motor matemático Python.'
     );
   }
 
@@ -957,10 +1090,12 @@ export async function requestPythonSpecializedProbability(params: {
       drawnCount: params.drawnCount,
       chosenCount: params.chosenCount,
       simpleBetPriceCents: params.simpleBetPriceCents,
+      simpleBetsCount: params.simpleBets?.length,
     },
     parsed.data
   );
 
   return parsed.data;
 }
+
 

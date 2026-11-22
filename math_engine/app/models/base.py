@@ -42,6 +42,7 @@ class BaseLotteryMathModel(ABC):
         price_updated_at: Optional[str],
         price_source: Optional[str],
         simple_games_count: Optional[int],
+        simple_bets: Optional[List[List[int]]] = None,
     ) -> Dict[str, Any]:
         """Executa o cálculo probabilístico completo da modalidade."""
         raise NotImplementedError

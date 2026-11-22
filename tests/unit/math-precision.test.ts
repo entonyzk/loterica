@@ -1067,6 +1067,25 @@ describe('Unitários — 5. Endpoints Especializados Node & Ponte Python (/api/m
           target_hits: w.targetHits,
           winning_simple_combinations: w.winningSimpleCombinations,
         })),
+        ...(h.expectedEmbeddedWinsPerDraw !== undefined
+          ? { expected_embedded_wins_per_draw: h.expectedEmbeddedWinsPerDraw }
+          : {}),
+        ...(h.atLeastOneWin
+          ? {
+              at_least_one_win: {
+                triggering_volante_hits: h.atLeastOneWin.triggeringVolanteHits,
+                probability: h.atLeastOneWin.probability,
+                raw_numerator: h.atLeastOneWin.rawNumerator,
+                raw_denominator: h.atLeastOneWin.rawDenominator,
+                exact_numerator: h.atLeastOneWin.exactNumerator,
+                exact_denominator: h.atLeastOneWin.exactDenominator,
+                scientific_notation: h.atLeastOneWin.scientificNotation,
+                odds_one_in: h.atLeastOneWin.oddsOneIn,
+                precision_classification: h.atLeastOneWin.precisionClassification,
+                memory: toSnakeMemory(h.atLeastOneWin.memory),
+              },
+            }
+          : {}),
         memory: toSnakeMemory(h.memory),
       };
     }
@@ -1153,8 +1172,20 @@ describe('Unitários — 5. Endpoints Especializados Node & Ponte Python (/api/m
           },
           expected_winning_games_per_draw:
             specializedAnalysis.simpleGamesComparison.expectedWinningGamesPerDraw,
-          independent_model_any_prize_probability:
-            specializedAnalysis.simpleGamesComparison.independentModelAnyPrizeProbability,
+          expected_secondary_winning_games_per_draw:
+            specializedAnalysis.simpleGamesComparison.expectedSecondaryWinningGamesPerDraw,
+          secondary_prize_status: specializedAnalysis.simpleGamesComparison.secondaryPrizeStatus,
+          overlap_dependency_notice:
+            specializedAnalysis.simpleGamesComparison.overlapDependencyNotice,
+          exact_union_analysis: null,
+          illustrative_independent_approximation: {
+            value:
+              specializedAnalysis.simpleGamesComparison.illustrativeIndependentApproximation.value,
+            is_exact: false as const,
+            warning:
+              specializedAnalysis.simpleGamesComparison.illustrativeIndependentApproximation
+                .warning,
+          },
           equiprobability_notice: specializedAnalysis.simpleGamesComparison.equiprobabilityNotice,
         },
         comparison_rows: specializedAnalysis.comparisonRows.map((r) => ({
@@ -1177,14 +1208,24 @@ describe('Unitários — 5. Endpoints Especializados Node & Ponte Python (/api/m
       };
     }
 
-    let mode: 'ok' | 'bad_cost' | 'bad_invariant' = 'ok';
+    let mode: 'ok' | 'bad_cost' | 'bad_invariant' | 'bad_at_least' | 'python_404' = 'ok';
     const stub = http.createServer((req, res) => {
       if (req.url === '/v1/probabilities/specialized' && req.method === 'POST') {
+        if (mode === 'python_404') {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ detail: 'Modalidade não registrada no motor Python.' }));
+          return;
+        }
         const body = buildValidSpecializedPythonPayload();
         if (mode === 'bad_cost') {
           body.multiple_bet.total_cost_cents = '999999';
         } else if (mode === 'bad_invariant') {
           body.no_prize.exact_numerator = '1';
+        } else if (mode === 'bad_at_least') {
+          const quinaTier = body.prize_tiers.find((t) => t.hits === 5);
+          if (quinaTier?.at_least_one_win) {
+            quinaTier.at_least_one_win.exact_numerator = '999999';
+          }
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(body));
@@ -1220,6 +1261,44 @@ describe('Unitários — 5. Endpoints Especializados Node & Ponte Python (/api/m
       const okJson = await okRes.json();
       expect(okJson.execution_source).toBe('python_fastapi_engine');
       expect(okJson.multiple_bet.total_cost_cents).toBe('4200');
+      expect(okJson.simple_games_comparison.secondary_prize_status).toBe(
+        'requires_explicit_combinations'
+      );
+
+      // Rejeita generic-reference e modalidades desconhecidas -> 400 / 404
+      const genericRes = await fetch(`${baseUrl}/api/math/python/specialized`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lotteryCode: 'generic-reference',
+          universeSize: 60,
+          drawnCount: 6,
+          chosenCount: 6,
+        }),
+      });
+      expect(genericRes.status).toBe(400);
+      expect((await genericRes.json()).error).toBe('GENERIC_CODE_NOT_ALLOWED');
+
+      const unknownModRes = await fetch(`${baseUrl}/api/math/python/specialized`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lotteryCode: 'modalidade-inexistente',
+          chosenCount: 6,
+        }),
+      });
+      expect(unknownModRes.status).toBe(404);
+      expect((await unknownModRes.json()).error).toBe('LOTTERY_NOT_FOUND');
+
+      // Propaga 404 LOTTERY_NOT_REGISTERED do Python
+      mode = 'python_404';
+      const py404Res = await fetch(`${baseUrl}/api/math/python/specialized`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: reqBody,
+      });
+      expect(py404Res.status).toBe(404);
+      expect((await py404Res.json()).error).toBe('LOTTERY_NOT_REGISTERED');
 
       // Rejeita custo adulterado -> 502
       mode = 'bad_cost';
@@ -1240,6 +1319,16 @@ describe('Unitários — 5. Endpoints Especializados Node & Ponte Python (/api/m
       });
       expect(badInvRes.status).toBe(502);
       expect((await badInvRes.json()).error).toBe('MATH_ENGINE_INTEGRITY_ERROR');
+
+      // Rejeita fração adulterada em at_least_one_win -> 502
+      mode = 'bad_at_least';
+      const badAloRes = await fetch(`${baseUrl}/api/math/python/specialized`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: reqBody,
+      });
+      expect(badAloRes.status).toBe(502);
+      expect((await badAloRes.json()).error).toBe('MATH_ENGINE_INTEGRITY_ERROR');
     } finally {
       process.env.MATH_ENGINE_URL = prevUrl;
       process.env.MATH_ENGINE_TIMEOUT_MS = prevTimeout;
@@ -1249,4 +1338,111 @@ describe('Unitários — 5. Endpoints Especializados Node & Ponte Python (/api/m
     }
   });
 });
+
+describe('Unitários — 6. Correções Matemáticas Etapa 2 (P(≥ 1 em faixa), União Exata & Sobreposição)', () => {
+  it('calcula P(≥ 1 prêmio na faixa) e média esperada separadamente para Mega-Sena (m=7) e Lotofácil (m=16)', () => {
+    const mega7 = computeSpecializedModalityAnalysis({
+      lotteryCode: 'mega-sena',
+      universeSize: 60,
+      drawnCount: 6,
+      chosenCount: 7,
+      minNumbersToChoose: 6,
+      maxNumbersToChoose: 20,
+      prizeTiers: MEGA_SENA_TIERS,
+      simpleBetPriceCents: 600,
+    });
+    const quina7 = mega7.prizeTiers.find((t) => t.hits === 5)!;
+    const h5 = mega7.distribution.find((d) => d.hits === 5)!;
+    const h6 = mega7.distribution.find((d) => d.hits === 6)!;
+    expect(quina7.atLeastOneWin).toBeDefined();
+    expect(quina7.atLeastOneWin!.triggeringVolanteHits).toEqual([5, 6]);
+    expect(BigInt(quina7.atLeastOneWin!.rawNumerator)).toBe(
+      BigInt(h5.rawNumerator) + BigInt(h6.rawNumerator)
+    );
+    expect(quina7.expectedEmbeddedWinsPerDraw).toBeCloseTo((7 * 324) / 50063860, 12);
+
+    const loto16 = computeSpecializedModalityAnalysis({
+      lotteryCode: 'lotofacil',
+      universeSize: 25,
+      drawnCount: 15,
+      chosenCount: 16,
+      minNumbersToChoose: 15,
+      maxNumbersToChoose: 20,
+      prizeTiers: LOTOFACIL_TIERS,
+      simpleBetPriceCents: 350,
+    });
+    const t14 = loto16.prizeTiers.find((t) => t.hits === 14)!;
+    const d14 = loto16.distribution.find((d) => d.hits === 14)!;
+    const d15 = loto16.distribution.find((d) => d.hits === 15)!;
+    expect(t14.atLeastOneWin!.triggeringVolanteHits).toEqual([14, 15]);
+    expect(BigInt(t14.atLeastOneWin!.rawNumerator)).toBe(
+      BigInt(d14.rawNumerator) + BigInt(d15.rawNumerator)
+    );
+    expect(t14.expectedEmbeddedWinsPerDraw).toBeCloseTo((16 * 150) / 3268760, 12);
+  });
+
+  it('calcula união exata de prêmios secundários com combinações conhecidas e evidencia impacto da sobreposição', () => {
+    const noExplicit = computeSpecializedModalityAnalysis({
+      lotteryCode: 'mega-sena',
+      universeSize: 60,
+      drawnCount: 6,
+      chosenCount: 6,
+      minNumbersToChoose: 6,
+      maxNumbersToChoose: 20,
+      prizeTiers: MEGA_SENA_TIERS,
+      simpleBetPriceCents: 600,
+      simpleGamesCount: 2,
+    });
+    expect(noExplicit.simpleGamesComparison.secondaryPrizeStatus).toBe(
+      'requires_explicit_combinations'
+    );
+    expect(noExplicit.simpleGamesComparison.exactUnionAnalysis).toBeNull();
+    expect(noExplicit.simpleGamesComparison.illustrativeIndependentApproximation.isExact).toBe(
+      false
+    );
+
+    const disjoint = computeSpecializedModalityAnalysis({
+      lotteryCode: 'mega-sena',
+      universeSize: 60,
+      drawnCount: 6,
+      chosenCount: 6,
+      minNumbersToChoose: 6,
+      maxNumbersToChoose: 20,
+      prizeTiers: MEGA_SENA_TIERS,
+      simpleBetPriceCents: 600,
+      simpleBets: [
+        [1, 2, 3, 4, 5, 6],
+        [7, 8, 9, 10, 11, 12],
+      ],
+    });
+    const highOverlap = computeSpecializedModalityAnalysis({
+      lotteryCode: 'mega-sena',
+      universeSize: 60,
+      drawnCount: 6,
+      chosenCount: 6,
+      minNumbersToChoose: 6,
+      maxNumbersToChoose: 20,
+      prizeTiers: MEGA_SENA_TIERS,
+      simpleBetPriceCents: 600,
+      simpleBets: [
+        [1, 2, 3, 4, 5, 6],
+        [1, 2, 3, 4, 5, 7],
+      ],
+    });
+    const uDis = disjoint.simpleGamesComparison.exactUnionAnalysis!;
+    const uOvl = highOverlap.simpleGamesComparison.exactUnionAnalysis!;
+    expect(disjoint.simpleGamesComparison.secondaryPrizeStatus).toBe('exact_union_computed');
+    expect(uDis.pairwiseOverlapSummary.disjointPairsCount).toBe(1);
+    expect(uOvl.pairwiseOverlapSummary.minOverlap).toBe(5);
+    expect(uDis.mainPrizeUnion.rawNumerator).toBe('2');
+    expect(uOvl.mainPrizeUnion.rawNumerator).toBe('2');
+    expect(BigInt(uDis.secondaryPrizeUnion.rawNumerator)).toBeGreaterThan(
+      BigInt(uOvl.secondaryPrizeUnion.rawNumerator)
+    );
+    expect(BigInt(uDis.anyPrizeUnion.rawNumerator)).toBeGreaterThan(
+      BigInt(uOvl.anyPrizeUnion.rawNumerator)
+    );
+  });
+});
+
 

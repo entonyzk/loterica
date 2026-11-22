@@ -13,7 +13,12 @@ from .core.contracts import (
     TheoreticalProbabilityRequest,
     TheoreticalProbabilityResponse,
 )
-from .models import list_registered_models, resolve_lottery_model
+from .models import (
+    UnregisteredLotteryError,
+    list_registered_models,
+    resolve_lottery_model,
+    validate_specialized_lottery_params,
+)
 
 app = FastAPI(
     title="LOTUS AI Mathematical Engine",
@@ -81,7 +86,6 @@ def compute_theoretical_probability(payload: TheoreticalProbabilityRequest):
 @app.post("/v1/probabilities/specialized")
 def compute_specialized_probability(payload: SpecializedProbabilityRequest):
     try:
-        model = resolve_lottery_model(payload.lottery_code, payload.math_model_type)
         min_choose = (
             payload.min_numbers_to_choose
             if payload.min_numbers_to_choose is not None
@@ -92,6 +96,18 @@ def compute_specialized_probability(payload: SpecializedProbabilityRequest):
             if payload.max_numbers_to_choose is not None
             else payload.chosen_count
         )
+        prize_tier_dicts = [t.model_dump() for t in payload.prize_tiers]
+        validate_specialized_lottery_params(
+            lottery_code=payload.lottery_code,
+            math_model_type=payload.math_model_type,
+            universe_size=payload.universe_size,
+            drawn_count=payload.drawn_count,
+            chosen_count=payload.chosen_count,
+            min_numbers_to_choose=min_choose,
+            max_numbers_to_choose=max_choose,
+            prize_tiers=prize_tier_dicts,
+        )
+        model = resolve_lottery_model(payload.lottery_code, payload.math_model_type)
         return model.compute_specialized(
             lottery_code=payload.lottery_code,
             universe_size=payload.universe_size,
@@ -99,12 +115,15 @@ def compute_specialized_probability(payload: SpecializedProbabilityRequest):
             chosen_count=payload.chosen_count,
             min_numbers_to_choose=min_choose,
             max_numbers_to_choose=max_choose,
-            prize_tiers=[t.model_dump() for t in payload.prize_tiers],
+            prize_tiers=prize_tier_dicts,
             simple_bet_price_cents=payload.simple_bet_price_cents,
             price_updated_at=payload.price_updated_at,
             price_source=payload.price_source,
             simple_games_count=payload.simple_games_count,
+            simple_bets=payload.simple_bets,
         )
+    except UnregisteredLotteryError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except NotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
     except ValueError as exc:

@@ -315,3 +315,190 @@ def test_fastapi_specialized_endpoints():
         },
     )
     assert unimplemented.status_code == 501
+
+    unknown_res = client.post(
+        "/v1/probabilities/specialized",
+        json={
+            "lottery_code": "loteria-inexistente",
+            "math_model_type": "hypergeometric_single_group",
+            "universe_size": 60,
+            "drawn_count": 6,
+            "chosen_count": 6,
+        },
+    )
+    assert unknown_res.status_code == 404
+
+    generic_res = client.post(
+        "/v1/probabilities/specialized",
+        json={
+            "lottery_code": "generic-reference",
+            "math_model_type": "hypergeometric_single_group",
+            "universe_size": 60,
+            "drawn_count": 6,
+            "chosen_count": 6,
+        },
+    )
+    assert generic_res.status_code == 422
+
+    incompatible_model_res = client.post(
+        "/v1/probabilities/specialized",
+        json={
+            "lottery_code": "mega-sena",
+            "math_model_type": "positional_columns",
+            "universe_size": 60,
+            "drawn_count": 6,
+            "chosen_count": 6,
+        },
+    )
+    assert incompatible_model_res.status_code == 422
+
+
+def test_specialized_at_least_one_win_and_multiple_bets():
+    from app.models import resolve_lottery_model
+
+    mega = resolve_lottery_model("mega-sena", "hypergeometric_single_group")
+    mega_tiers = [
+        {"hits": 6, "tier_name": "Sena", "tier_order": 1, "is_main_prize": True},
+        {"hits": 5, "tier_name": "Quina", "tier_order": 2, "is_main_prize": False},
+        {"hits": 4, "tier_name": "Quadra", "tier_order": 3, "is_main_prize": False},
+    ]
+    res_mega7 = mega.compute_specialized(
+        lottery_code="mega-sena",
+        universe_size=60,
+        drawn_count=6,
+        chosen_count=7,
+        min_numbers_to_choose=6,
+        max_numbers_to_choose=20,
+        prize_tiers=mega_tiers,
+        simple_bet_price_cents=600,
+        price_updated_at=None,
+        price_source=None,
+        simple_games_count=7,
+    )
+    quina_tier = next(t for t in res_mega7["prize_tiers"] if t["hits"] == 5)
+    assert quina_tier["at_least_one_win"]["triggering_volante_hits"] == [5, 6]
+    raw_h5 = int(res_mega7["distribution_by_hits"]["5"]["raw_numerator"])
+    raw_h6 = int(res_mega7["distribution_by_hits"]["6"]["raw_numerator"])
+    assert int(quina_tier["at_least_one_win"]["raw_numerator"]) == raw_h5 + raw_h6
+    assert quina_tier["expected_embedded_wins_per_draw"] == pytest.approx(7 * (324 / 50_063_860), rel=1e-12)
+
+    loto = resolve_lottery_model("lotofacil", "hypergeometric_single_group")
+    loto_tiers = [
+        {"hits": h, "tier_name": f"{h} acertos", "tier_order": 16 - h, "is_main_prize": h == 15}
+        for h in range(15, 10, -1)
+    ]
+    res_loto16 = loto.compute_specialized(
+        lottery_code="lotofacil",
+        universe_size=25,
+        drawn_count=15,
+        chosen_count=16,
+        min_numbers_to_choose=15,
+        max_numbers_to_choose=20,
+        prize_tiers=loto_tiers,
+        simple_bet_price_cents=350,
+        price_updated_at=None,
+        price_source=None,
+        simple_games_count=16,
+    )
+    t14 = next(t for t in res_loto16["prize_tiers"] if t["hits"] == 14)
+    assert t14["at_least_one_win"]["triggering_volante_hits"] == [14, 15]
+    assert int(t14["at_least_one_win"]["raw_numerator"]) == (
+        int(res_loto16["distribution_by_hits"]["14"]["raw_numerator"])
+        + int(res_loto16["distribution_by_hits"]["15"]["raw_numerator"])
+    )
+
+
+def test_specialized_exact_union_and_overlap_comparison():
+    from app.models import resolve_lottery_model
+
+    mega = resolve_lottery_model("mega-sena", "hypergeometric_single_group")
+    mega_tiers = [
+        {"hits": 6, "tier_name": "Sena", "tier_order": 1, "is_main_prize": True},
+        {"hits": 5, "tier_name": "Quina", "tier_order": 2, "is_main_prize": False},
+        {"hits": 4, "tier_name": "Quadra", "tier_order": 3, "is_main_prize": False},
+    ]
+
+    # Sem apostas explícitas -> status exige combinações, aproximação marcada is_exact=False
+    without_bets = mega.compute_specialized(
+        lottery_code="mega-sena",
+        universe_size=60,
+        drawn_count=6,
+        chosen_count=6,
+        min_numbers_to_choose=6,
+        max_numbers_to_choose=20,
+        prize_tiers=mega_tiers,
+        simple_bet_price_cents=600,
+        price_updated_at=None,
+        price_source=None,
+        simple_games_count=2,
+    )
+    assert without_bets["simple_games_comparison"]["secondary_prize_status"] == "requires_explicit_combinations"
+    assert without_bets["simple_games_comparison"]["exact_union_analysis"] is None
+    assert without_bets["simple_games_comparison"]["illustrative_independent_approximation"]["is_exact"] is False
+
+    # 2 jogos disjuntos vs 2 jogos com 5 dezenas em comum
+    disjoint = mega.compute_specialized(
+        lottery_code="mega-sena",
+        universe_size=60,
+        drawn_count=6,
+        chosen_count=6,
+        min_numbers_to_choose=6,
+        max_numbers_to_choose=20,
+        prize_tiers=mega_tiers,
+        simple_bet_price_cents=600,
+        price_updated_at=None,
+        price_source=None,
+        simple_games_count=2,
+        simple_bets=[[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]],
+    )
+    high_overlap = mega.compute_specialized(
+        lottery_code="mega-sena",
+        universe_size=60,
+        drawn_count=6,
+        chosen_count=6,
+        min_numbers_to_choose=6,
+        max_numbers_to_choose=20,
+        prize_tiers=mega_tiers,
+        simple_bet_price_cents=600,
+        price_updated_at=None,
+        price_source=None,
+        simple_games_count=2,
+        simple_bets=[[1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 7]],
+    )
+    u_dis = disjoint["simple_games_comparison"]["exact_union_analysis"]
+    u_ovl = high_overlap["simple_games_comparison"]["exact_union_analysis"]
+    assert u_dis["pairwise_overlap_summary"]["disjoint_pairs_count"] == 1
+    assert u_ovl["pairwise_overlap_summary"]["min_overlap"] == 5
+    assert u_dis["main_prize_union"]["raw_numerator"] == "2"
+    assert u_ovl["main_prize_union"]["raw_numerator"] == "2"
+    assert int(u_dis["secondary_prize_union"]["raw_numerator"]) > int(u_ovl["secondary_prize_union"]["raw_numerator"])
+    assert int(u_dis["any_prize_union"]["raw_numerator"]) > int(u_ovl["any_prize_union"]["raw_numerator"])
+
+
+def test_registry_validation_rejects_unknown_and_mismatched_modalities():
+    from app.models.registry import UnregisteredLotteryError, validate_specialized_lottery_params
+
+    with pytest.raises(UnregisteredLotteryError):
+        validate_specialized_lottery_params(
+            lottery_code="nao-existe",
+            math_model_type="hypergeometric_single_group",
+            universe_size=60,
+            drawn_count=6,
+            chosen_count=6,
+            min_numbers_to_choose=6,
+            max_numbers_to_choose=20,
+            prize_tiers=[{"hits": 6}],
+        )
+
+    with pytest.raises(ValueError):
+        validate_specialized_lottery_params(
+            lottery_code="mega-sena",
+            math_model_type="hypergeometric_single_group",
+            universe_size=50,
+            drawn_count=6,
+            chosen_count=6,
+            min_numbers_to_choose=6,
+            max_numbers_to_choose=20,
+            prize_tiers=[{"hits": 6}],
+        )
+

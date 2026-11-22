@@ -8,7 +8,14 @@ from .prepared import (
     MultiGroupCombinatorialModel,
     PositionalColumnsModel,
 )
-from .registry import MODEL_REGISTRY, list_registered_models, resolve_lottery_model
+from .registry import (
+    MODEL_REGISTRY,
+    REGISTERED_LOTTERY_SPECS,
+    UnregisteredLotteryError,
+    list_registered_models,
+    resolve_lottery_model,
+    validate_specialized_lottery_params,
+)
 
 __all__ = [
     "BaseLotteryMathModel",
@@ -21,6 +28,9 @@ __all__ = [
     "ExtraFieldCombinatorialModel",
     "MultiExtractionModel",
     "MODEL_REGISTRY",
+    "REGISTERED_LOTTERY_SPECS",
+    "UnregisteredLotteryError",
     "list_registered_models",
     "resolve_lottery_model",
+    "validate_specialized_lottery_params",
 ]

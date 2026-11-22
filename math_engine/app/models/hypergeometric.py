@@ -1,9 +1,10 @@
 """Modelos hipergeométricos especializados para modalidades de grupo único (Mega-Sena, Lotofácil, etc.)."""
 
+from collections import defaultdict
 from decimal import Decimal
 from fractions import Fraction
 from math import comb
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..core.axioms import (
     DISTRIBUTION_SUM_TOLERANCE,
@@ -72,6 +73,297 @@ def _compute_embedded_simple_wins(
     return wins
 
 
+def _count_losing_draws_upward_closed(
+    universe_size: int,
+    drawn_count: int,
+    bet_sets: List[Set[int]],
+    h_min: int,
+) -> int:
+    """Conta exatamente quantos sorteios D (|D|=drawn_count) NÃO atingem h_min em nenhum bilhete."""
+    q = len(bet_sets)
+    if h_min <= 0:
+        return 0
+
+    mask_counts: Dict[int, int] = defaultdict(int)
+    for x in range(1, universe_size + 1):
+        m = 0
+        for i, bs in enumerate(bet_sets):
+            if x in bs:
+                m |= 1 << i
+        mask_counts[m] += 1
+
+    outside = mask_counts.pop(0, 0)
+    atoms = list(mask_counts.items())
+
+    # Usa dualidade de complemento (escolher N - k não sorteadas) quando for menor e eficiente
+    use_complement = (universe_size - drawn_count) < drawn_count and (drawn_count - h_min + 1) <= 6
+    if use_complement:
+        draw_need = universe_size - drawn_count
+        lose_min = drawn_count - h_min + 1
+        suffix_avail = [[0] * q for _ in range(len(atoms) + 1)]
+        for idx in range(len(atoms) - 1, -1, -1):
+            m, cnt = atoms[idx]
+            for i in range(q):
+                suffix_avail[idx][i] = suffix_avail[idx + 1][i] + (cnt if (m & (1 << i)) else 0)
+
+        state_dp: Dict[Tuple[int, ...], int] = {(0,) * (q + 1): 1}
+        for idx, (m, cnt) in enumerate(atoms):
+            rem = suffix_avail[idx + 1]
+            affected = [i for i in range(q) if (m & (1 << i))]
+            next_dp: Dict[Tuple[int, ...], int] = defaultdict(int)
+            for state, ways in state_dp.items():
+                d = state[0]
+                max_take = min(cnt, draw_need - d)
+                for take in range(max_take + 1):
+                    nd = d + take
+                    new_h = list(state[1:])
+                    for i in affected:
+                        nh = new_h[i] + take
+                        if nh > lose_min:
+                            nh = lose_min
+                        new_h[i] = nh
+                    ok = True
+                    for i in range(q):
+                        if new_h[i] + rem[i] < lose_min or new_h[i] + (draw_need - nd) < lose_min:
+                            ok = False
+                            break
+                    if ok:
+                        next_dp[(nd, *new_h)] += ways * comb(cnt, take)
+            state_dp = next_dp
+
+        losing = 0
+        target_tuple = (lose_min,) * q
+        for state, ways in state_dp.items():
+            if state[1:] == target_tuple:
+                need_out = draw_need - state[0]
+                if 0 <= need_out <= outside:
+                    losing += ways * comb(outside, need_out)
+        return losing
+
+    state_dp = {(0,) * (q + 1): 1}
+    for m, cnt in atoms:
+        affected = [i for i in range(q) if (m & (1 << i))]
+        next_dp = defaultdict(int)
+        for state, ways in state_dp.items():
+            d = state[0]
+            max_take = min(cnt, drawn_count - d)
+            for take in range(max_take + 1):
+                nd = d + take
+                new_h = list(state[1:])
+                ok = True
+                for i in affected:
+                    new_h[i] += take
+                    if new_h[i] >= h_min:
+                        ok = False
+                        break
+                if ok:
+                    next_dp[(nd, *new_h)] += ways * comb(cnt, take)
+        state_dp = next_dp
+
+    losing = 0
+    for state, ways in state_dp.items():
+        need_out = drawn_count - state[0]
+        if 0 <= need_out <= outside:
+            losing += ways * comb(outside, need_out)
+    return losing
+
+
+def _compute_exact_union_for_simple_bets(
+    *,
+    universe_size: int,
+    drawn_count: int,
+    simple_bets: List[List[int]],
+    effective_tiers: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Calcula a união probabilística exata (sem suposição de independência) para apostas simples explícitas."""
+    q = len(simple_bets)
+    total_space = comb(universe_size, drawn_count)
+    bet_sets = [set(b) for b in simple_bets]
+    prize_hits = sorted(int(t["hits"]) for t in effective_tiers)
+    main_hits = next(
+        (int(t["hits"]) for t in effective_tiers if t.get("is_main_prize")),
+        max(prize_hits) if prize_hits else drawn_count,
+    )
+    secondary_hits = {h for h in prize_hits if h != main_hits}
+
+    overlaps: List[int] = []
+    for i in range(q):
+        for j in range(i + 1, q):
+            overlaps.append(len(bet_sets[i].intersection(bet_sets[j])))
+
+    min_overlap = min(overlaps) if overlaps else 0
+    max_overlap = max(overlaps) if overlaps else 0
+    avg_overlap = (sum(overlaps) / len(overlaps)) if overlaps else 0.0
+    disjoint_pairs = sum(1 for o in overlaps if o == 0)
+
+    # Contagem exata da união de qualquer premiação
+    if not prize_hits:
+        any_raw_num = 0
+    else:
+        h_min = min(prize_hits)
+        expected_contiguous = list(range(h_min, drawn_count + 1))
+        if prize_hits == expected_contiguous:
+            any_raw_num = total_space - _count_losing_draws_upward_closed(
+                universe_size, drawn_count, bet_sets, h_min
+            )
+        else:
+            # DP exato geral sobre átomos de Venn caso existam faixas não contíguas
+            mask_counts: Dict[int, int] = defaultdict(int)
+            for x in range(1, universe_size + 1):
+                m = 0
+                for i, bs in enumerate(bet_sets):
+                    if x in bs:
+                        m |= 1 << i
+                mask_counts[m] += 1
+            outside = mask_counts.pop(0, 0)
+            atoms = list(mask_counts.items())
+            prize_set = set(prize_hits)
+            state_dp: Dict[Tuple[int, ...], int] = {(0,) * (q + 1): 1}
+            for m, cnt in atoms:
+                affected = [i for i in range(q) if (m & (1 << i))]
+                next_dp: Dict[Tuple[int, ...], int] = defaultdict(int)
+                for state, ways in state_dp.items():
+                    d = state[0]
+                    for take in range(min(cnt, drawn_count - d) + 1):
+                        new_h = list(state[1:])
+                        for i in affected:
+                            new_h[i] += take
+                        next_dp[(d + take, *new_h)] += ways * comb(cnt, take)
+                state_dp = next_dp
+            any_raw_num = 0
+            for state, ways in state_dp.items():
+                need_out = drawn_count - state[0]
+                if 0 <= need_out <= outside and any(h in prize_set for h in state[1:]):
+                    any_raw_num += ways * comb(outside, need_out)
+
+    # Contagem exata de pelo menos um prêmio secundário:
+    # Para faixas contíguas [h_min..drawn_count] com main_hits == drawn_count,
+    # um sorteio está em W_any \ W_sec iff D == B_i e nenhum B_j (j != i) acerta em secondary_hits.
+    if not secondary_hits:
+        sec_raw_num = 0
+    elif main_hits == drawn_count and prize_hits == list(range(min(prize_hits), drawn_count + 1)):
+        excluded_top_only = 0
+        for i in range(q):
+            has_sec_with_other = any(
+                j != i and len(bet_sets[i].intersection(bet_sets[j])) in secondary_hits
+                for j in range(q)
+            )
+            if not has_sec_with_other:
+                excluded_top_only += 1
+        sec_raw_num = max(0, any_raw_num - excluded_top_only)
+    else:
+        mask_counts = defaultdict(int)
+        for x in range(1, universe_size + 1):
+            m = 0
+            for i, bs in enumerate(bet_sets):
+                if x in bs:
+                    m |= 1 << i
+            mask_counts[m] += 1
+        outside = mask_counts.pop(0, 0)
+        atoms = list(mask_counts.items())
+        state_dp = {(0,) * (q + 1): 1}
+        for m, cnt in atoms:
+            affected = [i for i in range(q) if (m & (1 << i))]
+            next_dp = defaultdict(int)
+            for state, ways in state_dp.items():
+                d = state[0]
+                for take in range(min(cnt, drawn_count - d) + 1):
+                    new_h = list(state[1:])
+                    for i in affected:
+                        new_h[i] += take
+                    next_dp[(d + take, *new_h)] += ways * comb(cnt, take)
+            state_dp = next_dp
+        sec_raw_num = 0
+        for state, ways in state_dp.items():
+            need_out = drawn_count - state[0]
+            if 0 <= need_out <= outside and any(h in secondary_hits for h in state[1:]):
+                sec_raw_num += ways * comb(outside, need_out)
+
+    any_frac = Fraction(any_raw_num, total_space)
+    any_prob = float(Decimal(any_frac.numerator) / Decimal(any_frac.denominator))
+    sec_frac = Fraction(sec_raw_num, total_space)
+    sec_prob = float(Decimal(sec_frac.numerator) / Decimal(sec_frac.denominator))
+    main_frac = Fraction(q if main_hits == drawn_count else 0, total_space)
+    main_prob = float(Decimal(main_frac.numerator) / Decimal(main_frac.denominator))
+
+    return {
+        "games_count": q,
+        "pairwise_overlap_summary": {
+            "pair_count": len(overlaps),
+            "min_overlap": min_overlap,
+            "max_overlap": max_overlap,
+            "avg_overlap": round(avg_overlap, 4),
+            "disjoint_pairs_count": disjoint_pairs,
+        },
+        "main_prize_union": {
+            "raw_numerator": str(q if main_hits == drawn_count else 0),
+            "raw_denominator": str(total_space),
+            "exact_numerator": str(main_frac.numerator),
+            "exact_denominator": str(main_frac.denominator),
+            "probability": main_prob,
+            "scientific_notation": _format_decimal_scientific(main_frac),
+            "odds_one_in": _rounded_odds_one_in(main_frac),
+        },
+        "any_prize_union": {
+            "raw_numerator": str(any_raw_num),
+            "raw_denominator": str(total_space),
+            "exact_numerator": str(any_frac.numerator),
+            "exact_denominator": str(any_frac.denominator),
+            "probability": any_prob,
+            "scientific_notation": _format_decimal_scientific(any_frac),
+            "odds_one_in": _rounded_odds_one_in(any_frac),
+            "memory": {
+                "title": f"União Exata de Qualquer Premiação ({q} jogo(s) explícito(s))",
+                "formula": "P(⋃ E_i) = |⋃_{i=1}^q {D : |D ∩ B_i| ∈ F}| / C(N, k)",
+                "substituted_parameters": (
+                    f"{any_raw_num} / {total_space} "
+                    f"(pares: {len(overlaps)}, sobreposição mín/máx: {min_overlap}..{max_overlap})"
+                ),
+                "raw_numerator": str(any_raw_num),
+                "raw_denominator": str(total_space),
+                "simplified_fraction": f"{any_frac.numerator} / {any_frac.denominator}",
+                "decimal_probability": any_prob,
+                "percentage_formatted": _format_pct(any_prob),
+                "scientific_notation": _format_decimal_scientific(any_frac),
+                "odds_one_in": _rounded_odds_one_in(any_frac),
+                "plain_explanation": (
+                    f"Cálculo combinatório exato da união dos eventos vencedores considerando a estrutura real de interseções "
+                    f"entre as {q} combinações informadas (sem assumir independência). "
+                    f"Existem exatamente {any_raw_num} sorteios em {total_space} em que ao menos uma aposta é premiada."
+                ),
+            },
+        },
+        "secondary_prize_union": {
+            "raw_numerator": str(sec_raw_num),
+            "raw_denominator": str(total_space),
+            "exact_numerator": str(sec_frac.numerator),
+            "exact_denominator": str(sec_frac.denominator),
+            "probability": sec_prob,
+            "scientific_notation": _format_decimal_scientific(sec_frac),
+            "odds_one_in": _rounded_odds_one_in(sec_frac),
+            "memory": {
+                "title": f"União Exata de Pelo Menos Um Prêmio Secundário ({q} jogo(s) explícito(s))",
+                "formula": "P(⋃ E_sec,i) = |⋃_{i=1}^q {D : |D ∩ B_i| ∈ F_sec}| / C(N, k)",
+                "substituted_parameters": (
+                    f"{sec_raw_num} / {total_space} "
+                    f"(faixas secundárias: {sorted(secondary_hits)}, sobreposição mín/máx: {min_overlap}..{max_overlap})"
+                ),
+                "raw_numerator": str(sec_raw_num),
+                "raw_denominator": str(total_space),
+                "simplified_fraction": f"{sec_frac.numerator} / {sec_frac.denominator}",
+                "decimal_probability": sec_prob,
+                "percentage_formatted": _format_pct(sec_prob),
+                "scientific_notation": _format_decimal_scientific(sec_frac),
+                "odds_one_in": _rounded_odds_one_in(sec_frac),
+                "plain_explanation": (
+                    f"Contagem exata de sorteios em que pelo menos uma das {q} apostas individuais atinge uma faixa secundária "
+                    f"({sorted(secondary_hits)} acertos). A interseção entre os jogos altera diretamente o tamanho dessa união."
+                ),
+            },
+        },
+    }
+
+
 class HypergeometricLotteryModel(BaseLotteryMathModel):
     """Modelo hipergeométrico exato para sorteio uniforme sem reposição em grupo único."""
 
@@ -105,6 +397,7 @@ class HypergeometricLotteryModel(BaseLotteryMathModel):
         price_updated_at: Optional[str],
         price_source: Optional[str],
         simple_games_count: Optional[int],
+        simple_bets: Optional[List[List[int]]] = None,
     ) -> Dict[str, Any]:
         if chosen_count < min_numbers_to_choose or chosen_count > max_numbers_to_choose:
             raise ValueError(
@@ -186,7 +479,7 @@ class HypergeometricLotteryModel(BaseLotteryMathModel):
                 "is_main_prize": bool(tier.get("is_main_prize", False)) if tier else False,
                 "embedded_simple_wins": embedded_wins,
                 "memory": {
-                    "title": f"{tier['tier_name']} ({h} acertos)" if tier else f"{h} acertos",
+                    "title": f"{tier['tier_name']} — Acerto exato no volante ({h} acertos)" if tier else f"{h} acertos no volante",
                     "formula": formula,
                     "substituted_parameters": substituted,
                     "raw_numerator": base["raw_numerator"],
@@ -202,6 +495,77 @@ class HypergeometricLotteryModel(BaseLotteryMathModel):
             distribution_by_hits[str(h)] = point
             if is_prize_tier:
                 prize_tiers_out.append(point)
+
+        # Separação B & C em prize_tiers_out:
+        # C = P(obter pelo menos uma aposta simples premiada na faixa t) = sum_{h: w(h, t) > 0} P(H_volante = h)
+        # B = quantidade esperada de apostas simples premiadas nessa faixa por sorteio = C(m, k) * P_simples(X = t)
+        eq_simple_for_tiers = comb(chosen_count, drawn_count) if chosen_count >= drawn_count else 0
+        for tier_point in prize_tiers_out:
+            t_hits = int(tier_point["hits"])
+            triggering_hits: List[int] = []
+            at_least_one_raw_num = 0
+            at_least_one_frac = Fraction(0, 1)
+
+            for h_str, d_point in distribution_by_hits.items():
+                h_val = int(h_str)
+                miss_needed = drawn_count - t_hits
+                chosen_misses = chosen_count - h_val
+                if t_hits <= h_val and 0 <= miss_needed <= chosen_misses:
+                    embedded_cnt = comb(h_val, t_hits) * comb(chosen_misses, miss_needed)
+                    if embedded_cnt > 0:
+                        triggering_hits.append(h_val)
+                        if not d_point["is_impossible"]:
+                            at_least_one_raw_num += int(d_point["raw_numerator"])
+                            at_least_one_frac += Fraction(
+                                int(d_point["exact_numerator"]),
+                                int(d_point["exact_denominator"]),
+                            )
+
+            triggering_hits.sort()
+            at_least_prob = float(
+                Decimal(at_least_one_frac.numerator) / Decimal(at_least_one_frac.denominator)
+            )
+            at_least_odds = _rounded_odds_one_in(at_least_one_frac)
+            simple_t = hypergeometric_hit_detail(universe_size, drawn_count, drawn_count, t_hits)
+            simple_t_frac = Fraction(int(simple_t["exact_numerator"]), int(simple_t["exact_denominator"]))
+            expected_tier_wins = float(
+                Decimal(eq_simple_for_tiers * simple_t_frac.numerator) / Decimal(simple_t_frac.denominator)
+            )
+
+            terms_txt = " + ".join(f"P(H_volante={h})" for h in triggering_hits) if triggering_hits else "0"
+            tier_point["expected_embedded_wins_per_draw"] = expected_tier_wins
+            tier_point["at_least_one_win"] = {
+                "triggering_volante_hits": triggering_hits,
+                "probability": at_least_prob,
+                "raw_numerator": str(at_least_one_raw_num),
+                "raw_denominator": str(total_chosen),
+                "exact_numerator": str(at_least_one_frac.numerator),
+                "exact_denominator": str(at_least_one_frac.denominator),
+                "scientific_notation": _format_decimal_scientific(at_least_one_frac),
+                "odds_one_in": at_least_odds,
+                "precision_classification": (
+                    "exact"
+                    if at_least_one_frac.numerator in (0, at_least_one_frac.denominator)
+                    else "exact_rational_with_float_approximation"
+                ),
+                "memory": {
+                    "title": f"P(Pelo menos 1 prêmio em {tier_point['tier_name']})",
+                    "formula": "P(≥ 1 aposta na faixa t) = Σ P(H_volante = h) para todo h com C(h, t)·C(m − h, k − t) > 0",
+                    "substituted_parameters": f"{terms_txt} = {at_least_one_raw_num} / {total_chosen}",
+                    "raw_numerator": str(at_least_one_raw_num),
+                    "raw_denominator": str(total_chosen),
+                    "simplified_fraction": f"{at_least_one_frac.numerator} / {at_least_one_frac.denominator}",
+                    "decimal_probability": at_least_prob,
+                    "percentage_formatted": _format_pct(at_least_prob),
+                    "scientific_notation": _format_decimal_scientific(at_least_one_frac),
+                    "odds_one_in": at_least_odds,
+                    "plain_explanation": (
+                        f"Em um volante de {chosen_count} dezenas, a faixa '{tier_point['tier_name']}' ({t_hits} acertos) "
+                        f"é premiada em pelo menos uma aposta simples embutida sempre que o volante acerta h ∈ {triggering_hits} "
+                        f"dezenas sorteadas. Isso totaliza {at_least_one_raw_num} de {total_chosen} combinações possíveis."
+                    ),
+                },
+            }
 
         prize_tiers_out.sort(key=lambda item: int(item["hits"]), reverse=True)
 
@@ -308,23 +672,50 @@ class HypergeometricLotteryModel(BaseLotteryMathModel):
             },
         }
 
-        # Comparação contra q jogos simples distintos
+        # Comparação contra q jogos simples distintos (sem suposição falsa de independência como resultado exato)
         max_q = min(total_space_simple, 1_000_000)
-        q = simple_games_count if simple_games_count is not None else min(max(equivalent_simple, 1), 100_000)
-        q = max(1, min(q, max_q))
+        if simple_bets is not None:
+            q = len(simple_bets)
+        else:
+            q = simple_games_count if simple_games_count is not None else min(max(equivalent_simple, 1), 100_000)
+            q = max(1, min(q, max_q))
 
         simple_any_frac = Fraction(0, 1)
+        simple_sec_frac = Fraction(0, 1)
         for tier in effective_tiers:
-            t_detail = hypergeometric_hit_detail(universe_size, drawn_count, drawn_count, int(tier["hits"]))
+            t_hits = int(tier["hits"])
+            t_detail = hypergeometric_hit_detail(universe_size, drawn_count, drawn_count, t_hits)
             if not t_detail["is_impossible"]:
-                simple_any_frac += Fraction(
+                t_f = Fraction(
                     int(t_detail["exact_numerator"]),
                     int(t_detail["exact_denominator"]),
                 )
+                simple_any_frac += t_f
+                if not tier.get("is_main_prize") and t_hits != drawn_count:
+                    simple_sec_frac += t_f
         simple_any_float = float(Decimal(simple_any_frac.numerator) / Decimal(simple_any_frac.denominator))
+        simple_sec_float = float(Decimal(simple_sec_frac.numerator) / Decimal(simple_sec_frac.denominator))
 
         q_top_frac = Fraction(q, total_space_simple)
         q_top_float = float(Decimal(q_top_frac.numerator) / Decimal(q_top_frac.denominator))
+
+        exact_union_analysis = (
+            _compute_exact_union_for_simple_bets(
+                universe_size=universe_size,
+                drawn_count=drawn_count,
+                simple_bets=simple_bets,
+                effective_tiers=effective_tiers,
+            )
+            if simple_bets is not None
+            else None
+        )
+
+        overlap_notice = (
+            "A probabilidade exata de obter pelo menos um prêmio secundário (ou ao menos um prêmio total) "
+            "depende da sobreposição entre os jogos escolhidos e não pode ser determinada apenas pela quantidade q. "
+            "Informe as combinações individuais para calcular a união exata dos eventos."
+        )
+
         simple_games_obj = {
             "simple_games_count": q,
             "simple_bet_price_cents": simple_bet_price_cents,
@@ -339,7 +730,21 @@ class HypergeometricLotteryModel(BaseLotteryMathModel):
                 "odds_one_in": _rounded_odds_one_in(q_top_frac),
             },
             "expected_winning_games_per_draw": q * simple_any_float,
-            "independent_model_any_prize_probability": 1.0 - (1.0 - simple_any_float) ** q,
+            "expected_secondary_winning_games_per_draw": q * simple_sec_float,
+            "secondary_prize_status": (
+                "exact_union_computed" if exact_union_analysis is not None else "requires_explicit_combinations"
+            ),
+            "overlap_dependency_notice": overlap_notice,
+            "exact_union_analysis": exact_union_analysis,
+            "illustrative_independent_approximation": {
+                "value": 1.0 - (1.0 - simple_any_float) ** q,
+                "is_exact": False,
+                "warning": (
+                    "Aproximação ilustrativa sob hipótese falsa de independência (1 − (1 − p)^q). "
+                    "Apostas no mesmo concurso compartilham o sorteio e dependem da sobreposição combinatória; "
+                    "não representa probabilidade matemática exata."
+                ),
+            },
             "equiprobability_notice": (
                 "Em sorteios justos e independentes, combinações individuais distintas possuem exatamente "
                 "a mesma probabilidade matemática (1 / C(N, k))."

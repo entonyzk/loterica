@@ -204,11 +204,11 @@ export function buildOpenApiSpec() {
         post: {
           summary: 'Cálculo especializado completo por modalidade (Mega-Sena, Lotofácil) em BigInt exato',
           description:
-            'Calcula faixas oficiais de premiação, probabilidade de premiar vs. não premiar, apostas simples vs. múltiplas com custo verificado, desdobramento e memória de cálculo.',
+            'Calcula faixas oficiais de premiação, P(≥ 1 prêmio por faixa), P(premiação) vs. P(sem prêmio), apostas simples vs. múltiplas com custo verificado, união exata quando simpleBets explícitas são enviadas e memória de cálculo. Rejeita generic-reference e modalidades sem regra verificada.',
           'x-lotus-status': 'implemented',
           responses: {
             '200': { description: 'Análise matemática especializada completa' },
-            '400': { description: 'Parâmetros inválidos ou fora dos limites da modalidade' },
+            '400': { description: 'Parâmetros inválidos, generic-reference proibido ou combinações inválidas' },
             '404': { description: 'Modalidade ou concurso não encontrado' },
             '409': { description: 'Modalidade aguardando configuração ou regra fora de vigência' },
           },
@@ -217,11 +217,13 @@ export function buildOpenApiSpec() {
       '/api/math/python/specialized': {
         post: {
           summary: 'Executa cálculo especializado por modalidade no microsserviço Python FastAPI',
+          description:
+            'Fonte oficial dos cálculos especializados na interface. Consulta regras vigentes no PostgreSQL, encaminha ao Python (incluindo simpleBets opcionais para união exata) e audita todas as frações e invariantes.',
           'x-lotus-status': 'implemented',
           responses: {
             '200': { description: 'Resultado especializado validado do motor Python' },
-            '400': { description: 'Parâmetros inválidos' },
-            '404': { description: 'Modalidade não encontrada' },
+            '400': { description: 'Parâmetros inválidos, generic-reference proibido ou combinações inválidas' },
+            '404': { description: 'Modalidade não encontrada ou não registrada no motor Python' },
             '409': { description: 'Modalidade sem regra vigente verificada' },
             '501': { description: 'Modelo estrutural preparado aguardando ativação' },
             '502': { description: 'Divergência matemática ou contrato inválido do motor Python' },

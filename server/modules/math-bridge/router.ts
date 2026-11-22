@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { computeSpecializedModalityAnalysis } from '../../../src/modules/probabilities/specialized.ts';
+import {
+  computeSpecializedModalityAnalysis,
+  validateExplicitSimpleBets,
+} from '../../../src/modules/probabilities/specialized.ts';
 import { validateBody } from '../../middleware/validate.ts';
 import {
   MathEngineError,
@@ -34,6 +37,7 @@ const theoreticalRequestSchema = z
 const specializedRequestSchema = theoreticalRequestSchema
   .extend({
     simpleGamesCount: z.number().int().min(1).max(1_000_000).optional(),
+    simpleBets: z.array(z.array(z.number().int().min(1).max(1000)).min(1).max(100)).min(1).max(12).optional(),
   })
   .strict();
 
@@ -81,6 +85,13 @@ export function createMathRouter(
   router.post('/local/specialized', validateBody(specializedRequestSchema), async (req, res) => {
     try {
       const payload = req.body as z.infer<typeof specializedRequestSchema>;
+      if (payload.lotteryCode === 'generic-reference' || payload.mode === 'free') {
+        return res.status(400).json({
+          error: 'GENERIC_CODE_NOT_ALLOWED',
+          message:
+            'A rota especializada aceita exclusivamente modalidades oficiais cadastradas. Utilize /api/math/local/theoretical para Parâmetros Livres.',
+        });
+      }
       const validated = await resolveAndValidateTheoreticalInput(
         { ...payload, mode: 'modality' },
         repository
@@ -92,6 +103,24 @@ export function createMathRouter(
         });
       }
       const ctx = validated.modalityContext;
+      let normalizedBets: number[][] | undefined;
+      if (payload.simpleBets) {
+        normalizedBets = validateExplicitSimpleBets(
+          payload.simpleBets,
+          ctx.universeSize,
+          ctx.drawnCount
+        );
+        if (
+          payload.simpleGamesCount !== undefined &&
+          payload.simpleGamesCount !== normalizedBets.length
+        ) {
+          return res.status(400).json({
+            error: 'SIMPLE_BETS_COUNT_MISMATCH',
+            message: `simpleGamesCount (${payload.simpleGamesCount}) diverge da quantidade de apostas informadas (${normalizedBets.length}).`,
+          });
+        }
+      }
+
       const specialized = computeSpecializedModalityAnalysis({
         lotteryCode: ctx.lotteryCode,
         mathModelType: ctx.mathModelType,
@@ -105,6 +134,7 @@ export function createMathRouter(
         priceUpdatedAt: ctx.priceUpdatedAt,
         priceSource: ctx.priceSource,
         simpleGamesCount: payload.simpleGamesCount,
+        simpleBets: normalizedBets,
       });
 
       return res.json({
@@ -194,6 +224,13 @@ export function createMathRouter(
   router.post('/python/specialized', validateBody(specializedRequestSchema), async (req, res) => {
     try {
       const payload = req.body as z.infer<typeof specializedRequestSchema>;
+      if (payload.lotteryCode === 'generic-reference' || payload.mode === 'free') {
+        return res.status(400).json({
+          error: 'GENERIC_CODE_NOT_ALLOWED',
+          message:
+            'A rota especializada aceita exclusivamente modalidades oficiais cadastradas. Utilize /api/math/python/theoretical para Parâmetros Livres.',
+        });
+      }
       const validated = await resolveAndValidateTheoreticalInput(
         { ...payload, mode: 'modality' },
         repository
@@ -205,6 +242,24 @@ export function createMathRouter(
         });
       }
       const ctx = validated.modalityContext;
+      let normalizedBets: number[][] | undefined;
+      if (payload.simpleBets) {
+        normalizedBets = validateExplicitSimpleBets(
+          payload.simpleBets,
+          ctx.universeSize,
+          ctx.drawnCount
+        );
+        if (
+          payload.simpleGamesCount !== undefined &&
+          payload.simpleGamesCount !== normalizedBets.length
+        ) {
+          return res.status(400).json({
+            error: 'SIMPLE_BETS_COUNT_MISMATCH',
+            message: `simpleGamesCount (${payload.simpleGamesCount}) diverge da quantidade de apostas informadas (${normalizedBets.length}).`,
+          });
+        }
+      }
+
       const result = await requestPythonSpecializedProbability({
         lotteryCode: ctx.lotteryCode,
         mathModelType: ctx.mathModelType,
@@ -218,6 +273,7 @@ export function createMathRouter(
         priceUpdatedAt: ctx.priceUpdatedAt,
         priceSource: ctx.priceSource,
         simpleGamesCount: payload.simpleGamesCount,
+        simpleBets: normalizedBets,
       });
       return res.json({
         ...result,
@@ -233,6 +289,12 @@ export function createMathRouter(
       if (error instanceof MathEngineError) {
         return res.status(error.statusCode).json({
           error: error.code,
+          message: error.message,
+        });
+      }
+      if (error instanceof Error && error.message.includes('Aposta simples')) {
+        return res.status(400).json({
+          error: 'COMBINATORIAL_VALIDATION_ERROR',
           message: error.message,
         });
       }

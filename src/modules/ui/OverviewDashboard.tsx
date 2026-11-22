@@ -62,9 +62,15 @@ const MODULE_ROADMAP = [
     status: 'Implementado',
   },
   {
-    name: 'Ingestão e Validação de Regras e Resultados Oficiais',
-    module: 'Dados Históricos & Concursos',
+    name: 'Motor Matemático Especializado (Mega-Sena e Lotofácil)',
+    module: 'Probabilidades & Combinatória',
     stage: 'Etapa 2',
+    status: 'Implementado',
+  },
+  {
+    name: 'Ingestão de Resultados Históricos e Concursos Oficiais',
+    module: 'Dados Históricos & Concursos',
+    stage: 'Etapa 3',
     status: 'Planejado',
   },
   {
@@ -152,9 +158,9 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({ onNavigate
         <div className="flex flex-col justify-between rounded-xl border border-white/8 bg-[#12141A] p-6 lg:col-span-7 lg:p-8">
           <div className="space-y-4">
             <div className="flex items-center gap-2 text-xs text-neutral-400">
-              <span className="text-[#E5C158] font-medium">Etapa 1</span>
+              <span className="text-[#E5C158] font-medium">Etapa 2</span>
               <span aria-hidden="true">·</span>
-              <span>Fundação Técnica e Arquitetura Multiplataforma</span>
+              <span>Motor Matemático Especializado e Combinatória Verificável</span>
             </div>
 
             <h1 className="font-display text-2xl font-semibold tracking-tight text-[#F1F2F4] sm:text-3xl text-balance">
@@ -303,7 +309,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({ onNavigate
               {loading ? '—' : contestsCount ?? 0}
             </p>
             <p className="mt-1 text-xs text-neutral-400">
-              Ingestão oficial prevista na Etapa 2
+              Ingestão histórica prevista na Etapa 3
             </p>
           </div>
 
@@ -360,8 +366,9 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({ onNavigate
           </p>
           <p className="mt-1 text-xs leading-relaxed text-neutral-400">
             Por diretriz de integridade científica do LOTUS AI, resultados de loterias não são
-            inventados nem preenchidos com dados fictícios. As fontes oficiais cadastradas serão
-            validadas e sincronizadas na Etapa 2.
+            inventados nem preenchidos com dados fictícios. Regras verificadas de Mega-Sena e
+            Lotofácil já estão ativas no Laboratório Matemático; a série histórica de concursos será
+            ingerida na Etapa 3.
           </p>
         </div>
       </section>
@@ -374,7 +381,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({ onNavigate
               Mapa de Implementação da Plataforma
             </h2>
             <p className="mt-0.5 text-xs text-neutral-400">
-              Transparência de entregas entre a Etapa 1 (atual) e as etapas seguintes
+              Transparência de entregas até a Etapa 2 (atual) e etapas seguintes
             </p>
           </div>
           <button

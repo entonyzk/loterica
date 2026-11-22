@@ -11,6 +11,10 @@ import {
 import type { ModalityRuleRepository } from '../../server/modules/math-bridge/modality-validator.ts';
 import { createMathRouter } from '../../server/modules/math-bridge/router.ts';
 import { hashPassword, verifyPassword } from '../../src/db/users.ts';
+import {
+  computeEmbeddedSimpleWins,
+  computeSpecializedModalityAnalysis,
+} from '../../src/modules/probabilities/specialized.ts';
 
 function buildFullValidPythonPayload(params: {
   lotteryCode: string;
@@ -186,6 +190,15 @@ describe('Unitários — 3. Validação Matemática e Resiliência da Ponte Node
               numberUniverseMax: 60,
               drawnNumbersCount: 6,
               officialSource: 'Regra de Referência Unitária',
+              simpleBetPriceCents: 600,
+              priceUpdatedAt: new Date('2025-07-10T00:00:00Z'),
+              priceSource: 'https://loterias.caixa.gov.br/Paginas/Mega-Sena.aspx',
+              prizeTiersConfig: [
+                { hits: 6, tierName: 'Sena', tierOrder: 1, isMainPrize: true },
+                { hits: 5, tierName: 'Quina', tierOrder: 2, isMainPrize: false },
+                { hits: 4, tierName: 'Quadra', tierOrder: 3, isMainPrize: false },
+              ],
+              mathModelType: 'hypergeometric_single_group',
               isVerified: true,
               isLocked: false,
               validFrom: new Date('2026-01-01T00:00:00Z'),
@@ -698,3 +711,542 @@ describe('Unitários — 3. Validação Matemática e Resiliência da Ponte Node
     });
   });
 });
+
+const MEGA_SENA_TIERS = [
+  { hits: 6, tierName: 'Sena', tierOrder: 1, isMainPrize: true },
+  { hits: 5, tierName: 'Quina', tierOrder: 2, isMainPrize: false },
+  { hits: 4, tierName: 'Quadra', tierOrder: 3, isMainPrize: false },
+] as const;
+
+const LOTOFACIL_TIERS = [
+  { hits: 15, tierName: '15 acertos', tierOrder: 1, isMainPrize: true },
+  { hits: 14, tierName: '14 acertos', tierOrder: 2, isMainPrize: false },
+  { hits: 13, tierName: '13 acertos', tierOrder: 3, isMainPrize: false },
+  { hits: 12, tierName: '12 acertos', tierOrder: 4, isMainPrize: false },
+  { hits: 11, tierName: '11 acertos', tierOrder: 5, isMainPrize: false },
+] as const;
+
+describe('Unitários — 4. Motor Especializado Etapa 2 (Mega-Sena, Lotofácil, Múltiplas e Memória)', () => {
+  it('calcula referências completas da Mega-Sena (m=6, m=7 com desdobramento, m=20 extremo) e P(premiação)+P(sem prêmio)=1/1', () => {
+    // Aposta simples (m=6) com tarifa oficial Caixa R$ 6,00 (600 centavos)
+    const mega6 = computeSpecializedModalityAnalysis({
+      lotteryCode: 'mega-sena',
+      universeSize: 60,
+      drawnCount: 6,
+      chosenCount: 6,
+      minNumbersToChoose: 6,
+      maxNumbersToChoose: 20,
+      prizeTiers: MEGA_SENA_TIERS,
+      simpleBetPriceCents: 600,
+      priceUpdatedAt: '2025-07-10T00:00:00.000Z',
+      priceSource: 'https://loterias.caixa.gov.br/Paginas/Mega-Sena.aspx',
+      simpleGamesCount: 7,
+    });
+
+    expect(mega6.totalSpaceSimpleCombinations).toBe('50063860');
+    expect(mega6.totalChosenCombinations).toBe('50063860');
+    expect(mega6.multipleBet.isMultipleBet).toBe(false);
+    expect(mega6.multipleBet.equivalentSimpleBets).toBe('1');
+    expect(mega6.multipleBet.totalCostCents).toBe('600');
+
+    const sena6 = mega6.prizeTiers.find((t) => t.hits === 6)!;
+    const quina6 = mega6.prizeTiers.find((t) => t.hits === 5)!;
+    const quadra6 = mega6.prizeTiers.find((t) => t.hits === 4)!;
+    expect(sena6.rawNumerator).toBe('1');
+    expect(sena6.exactDenominator).toBe('50063860');
+    expect(quina6.rawNumerator).toBe('324'); // C(6,5)*C(54,1) = 6*54
+    expect(quadra6.rawNumerator).toBe('21465'); // C(6,4)*C(54,2) = 15*1431
+
+    // Invariante exata BigInt: anyPrize + noPrize == 1/1
+    const anyNum6 = BigInt(mega6.anyPrize.exactNumerator);
+    const anyDen6 = BigInt(mega6.anyPrize.exactDenominator);
+    const noNum6 = BigInt(mega6.noPrize.exactNumerator);
+    const noDen6 = BigInt(mega6.noPrize.exactDenominator);
+    expect(anyNum6 * noDen6 + noNum6 * anyDen6).toBe(anyDen6 * noDen6);
+    expect(BigInt(mega6.anyPrize.rawNumerator)).toBe(1n + 324n + 21465n);
+
+    // Soma float = 1.0 dentro da tolerância
+    const sum6 = mega6.distribution.reduce((acc, row) => acc + row.probability, 0);
+    expect(Math.abs(sum6 - 1.0)).toBeLessThanOrEqual(DISTRIBUTION_SUM_TOLERANCE);
+
+    // Memória de cálculo preenchida
+    expect(sena6.memory.formula).toContain('P(X = h)');
+    expect(sena6.memory.simplifiedFraction).toBe('1 / 50063860');
+    expect(mega6.anyPrize.memory.plainExplanation.length).toBeGreaterThan(20);
+    expect(mega6.noPrize.memory.formula).toContain('1 − P(Premiação)');
+
+    // Comparação contra 7 jogos simples
+    expect(mega6.simpleGamesComparison.simpleGamesCount).toBe(7);
+    expect(mega6.simpleGamesComparison.totalCostCents).toBe('4200');
+    expect(mega6.simpleGamesComparison.topPrizeExact.simplifiedNumerator).toBe('1');
+    expect(mega6.simpleGamesComparison.topPrizeExact.simplifiedDenominator).toBe('7151980'); // 50063860 / 7
+
+    // Aposta múltipla (m=7) e desdobramento de Vandermonde
+    const mega7 = computeSpecializedModalityAnalysis({
+      lotteryCode: 'mega-sena',
+      universeSize: 60,
+      drawnCount: 6,
+      chosenCount: 7,
+      minNumbersToChoose: 6,
+      maxNumbersToChoose: 20,
+      prizeTiers: MEGA_SENA_TIERS,
+      simpleBetPriceCents: 600,
+    });
+    expect(mega7.totalChosenCombinations).toBe('386206920'); // C(60, 7)
+    expect(mega7.multipleBet.isMultipleBet).toBe(true);
+    expect(mega7.multipleBet.equivalentSimpleBets).toBe('7');
+    expect(mega7.multipleBet.totalCostCents).toBe('4200');
+    const desd6 = computeEmbeddedSimpleWins(7, 6, 6, MEGA_SENA_TIERS);
+    expect(desd6).toEqual([
+      { tierName: 'Sena', targetHits: 6, winningSimpleCombinations: '1' },
+      { tierName: 'Quina', targetHits: 5, winningSimpleCombinations: '6' },
+    ]);
+    const desd5 = computeEmbeddedSimpleWins(7, 6, 5, MEGA_SENA_TIERS);
+    expect(desd5).toEqual([
+      { tierName: 'Quina', targetHits: 5, winningSimpleCombinations: '2' },
+      { tierName: 'Quadra', targetHits: 4, winningSimpleCombinations: '5' },
+    ]);
+
+    // Caso extremo m=20 (38.760 apostas simples, R$ 232.560,00)
+    const mega20 = computeSpecializedModalityAnalysis({
+      lotteryCode: 'mega-sena',
+      universeSize: 60,
+      drawnCount: 6,
+      chosenCount: 20,
+      minNumbersToChoose: 6,
+      maxNumbersToChoose: 20,
+      prizeTiers: MEGA_SENA_TIERS,
+      simpleBetPriceCents: 600,
+    });
+    expect(mega20.multipleBet.equivalentSimpleBets).toBe('38760');
+    expect(mega20.multipleBet.totalCostCents).toBe('23256000');
+    expect(mega20.comparisonRows.length).toBe(15); // m = 6..20
+    const sum20 = mega20.distribution.reduce((acc, row) => acc + row.probability, 0);
+    expect(Math.abs(sum20 - 1.0)).toBeLessThanOrEqual(DISTRIBUTION_SUM_TOLERANCE);
+    const anyNum20 = BigInt(mega20.anyPrize.exactNumerator);
+    const anyDen20 = BigInt(mega20.anyPrize.exactDenominator);
+    const noNum20 = BigInt(mega20.noPrize.exactNumerator);
+    const noDen20 = BigInt(mega20.noPrize.exactDenominator);
+    expect(anyNum20 * noDen20 + noNum20 * anyDen20).toBe(anyDen20 * noDen20);
+  });
+
+  it('calcula referências completas da Lotofácil (m=15..20), eventos impossíveis h<5 e tarifas oficiais', () => {
+    const lotofacil15 = computeSpecializedModalityAnalysis({
+      lotteryCode: 'lotofacil',
+      universeSize: 25,
+      drawnCount: 15,
+      chosenCount: 15,
+      minNumbersToChoose: 15,
+      maxNumbersToChoose: 20,
+      prizeTiers: LOTOFACIL_TIERS,
+      simpleBetPriceCents: 350,
+      priceUpdatedAt: '2025-07-09T00:00:00.000Z',
+    });
+
+    expect(lotofacil15.totalSpaceSimpleCombinations).toBe('3268760');
+    expect(lotofacil15.multipleBet.equivalentSimpleBets).toBe('1');
+    expect(lotofacil15.multipleBet.totalCostCents).toBe('350');
+
+    // Para m=15 em N=25, k=15, acertos h in [0..4] são impossíveis (exato 0/1)
+    for (let h = 0; h <= 4; h++) {
+      const pt = lotofacil15.distribution.find((d) => d.hits === h)!;
+      expect(pt.isImpossible).toBe(true);
+      expect(pt.probability).toBe(0);
+      expect(pt.exactNumerator).toBe('0');
+      expect(pt.exactDenominator).toBe('1');
+    }
+
+    // Faixas oficiais: 15, 14, 13, 12, 11 acertos
+    const t15 = lotofacil15.prizeTiers.find((t) => t.hits === 15)!;
+    const t14 = lotofacil15.prizeTiers.find((t) => t.hits === 14)!;
+    const t13 = lotofacil15.prizeTiers.find((t) => t.hits === 13)!;
+    const t12 = lotofacil15.prizeTiers.find((t) => t.hits === 12)!;
+    const t11 = lotofacil15.prizeTiers.find((t) => t.hits === 11)!;
+    expect(t15.rawNumerator).toBe('1');
+    expect(t14.rawNumerator).toBe('150');
+    expect(t13.rawNumerator).toBe('4725');
+    expect(t12.rawNumerator).toBe('54600');
+    expect(t11.rawNumerator).toBe('286650');
+
+    expect(BigInt(lotofacil15.anyPrize.rawNumerator)).toBe(346126n);
+    expect(BigInt(lotofacil15.noPrize.rawNumerator)).toBe(3268760n - 346126n);
+
+    // Soma = 1.0
+    const sum15 = lotofacil15.distribution.reduce((acc, row) => acc + row.probability, 0);
+    expect(Math.abs(sum15 - 1.0)).toBeLessThanOrEqual(DISTRIBUTION_SUM_TOLERANCE);
+
+    // m=16: 16 apostas simples (R$ 56,00) + desdobramento em 15 acertos
+    const lotofacil16 = computeSpecializedModalityAnalysis({
+      lotteryCode: 'lotofacil',
+      universeSize: 25,
+      drawnCount: 15,
+      chosenCount: 16,
+      minNumbersToChoose: 15,
+      maxNumbersToChoose: 20,
+      prizeTiers: LOTOFACIL_TIERS,
+      simpleBetPriceCents: 350,
+    });
+    expect(lotofacil16.multipleBet.equivalentSimpleBets).toBe('16');
+    expect(lotofacil16.multipleBet.totalCostCents).toBe('5600');
+    expect(computeEmbeddedSimpleWins(16, 15, 15, LOTOFACIL_TIERS)).toEqual([
+      { tierName: '15 acertos', targetHits: 15, winningSimpleCombinations: '1' },
+      { tierName: '14 acertos', targetHits: 14, winningSimpleCombinations: '15' },
+    ]);
+
+    // Caso extremo m=20: C(20, 15) = 15.504 apostas simples (R$ 54.264,00)
+    const lotofacil20 = computeSpecializedModalityAnalysis({
+      lotteryCode: 'lotofacil',
+      universeSize: 25,
+      drawnCount: 15,
+      chosenCount: 20,
+      minNumbersToChoose: 15,
+      maxNumbersToChoose: 20,
+      prizeTiers: LOTOFACIL_TIERS,
+      simpleBetPriceCents: 350,
+    });
+    expect(lotofacil20.multipleBet.equivalentSimpleBets).toBe('15504');
+    expect(lotofacil20.multipleBet.totalCostCents).toBe('5426400');
+    expect(lotofacil20.comparisonRows.length).toBe(6); // m = 15..20
+    const anyNum20 = BigInt(lotofacil20.anyPrize.exactNumerator);
+    const anyDen20 = BigInt(lotofacil20.anyPrize.exactDenominator);
+    const noNum20 = BigInt(lotofacil20.noPrize.exactNumerator);
+    const noDen20 = BigInt(lotofacil20.noPrize.exactDenominator);
+    expect(anyNum20 * noDen20 + noNum20 * anyDen20).toBe(anyDen20 * noDen20);
+  });
+});
+
+describe('Unitários — 5. Endpoints Especializados Node & Ponte Python (/api/math/*/specialized)', () => {
+  let appServer: http.Server;
+  let baseUrl = '';
+
+  beforeAll(async () => {
+    const repo: ModalityRuleRepository = {
+      async findLotteryById(id) {
+        if (id === 1) return { id: 1, code: 'mega-sena', name: 'Mega-Sena', status: 'active' };
+        if (id === 2) return { id: 2, code: 'quina', name: 'Quina', status: 'awaiting_rules' };
+        return null;
+      },
+      async findLotteryByCode(code) {
+        if (code === 'mega-sena') {
+          return { id: 1, code: 'mega-sena', name: 'Mega-Sena', status: 'active' };
+        }
+        if (code === 'quina') {
+          return { id: 2, code: 'quina', name: 'Quina', status: 'awaiting_rules' };
+        }
+        return null;
+      },
+      async findRuleVersionsByLotteryId(lotteryTypeId) {
+        if (lotteryTypeId !== 1) return [];
+        return [
+          {
+            id: 10,
+            lotteryTypeId: 1,
+            versionNumber: 2,
+            minNumbersToChoose: 6,
+            maxNumbersToChoose: 20,
+            numberUniverseMin: 1,
+            numberUniverseMax: 60,
+            drawnNumbersCount: 6,
+            mathModelType: 'hypergeometric_single_group',
+            simpleBetPriceCents: 600,
+            priceUpdatedAt: new Date('2025-07-10T00:00:00Z'),
+            priceSource: 'https://loterias.caixa.gov.br/Paginas/Mega-Sena.aspx',
+            prizeTiersConfig: [...MEGA_SENA_TIERS],
+            officialSource: 'Caixa Econômica Federal — Mega-Sena',
+            isVerified: true,
+            isLocked: false,
+            validFrom: new Date('2025-07-10T00:00:00Z'),
+            validTo: null,
+          },
+        ];
+      },
+    };
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api/math', createMathRouter(repo));
+
+    await new Promise<void>((resolve) => {
+      appServer = app.listen(0, '127.0.0.1', () => {
+        const addr = appServer.address() as { port: number };
+        baseUrl = `http://127.0.0.1:${addr.port}`;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    if (appServer) {
+      await new Promise<void>((resolve, reject) => {
+        appServer.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
+
+  it('executa POST /api/math/local/specialized para regra verificada e rejeita modalidade não configurada', async () => {
+    const okRes = await fetch(`${baseUrl}/api/math/local/specialized`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lotteryId: 1,
+        lotteryCode: 'mega-sena',
+        chosenCount: 7,
+        simpleGamesCount: 7,
+      }),
+    });
+    expect(okRes.status).toBe(200);
+    const json = await okRes.json();
+    expect(json.executionSource).toBe('nodejs_local_bigint');
+    expect(json.multipleBet.equivalentSimpleBets).toBe('7');
+    expect(json.multipleBet.totalCostCents).toBe('4200');
+    expect(json.prizeTiers.length).toBe(3);
+
+    const awaitingRes = await fetch(`${baseUrl}/api/math/local/specialized`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lotteryCode: 'quina',
+        chosenCount: 5,
+      }),
+    });
+    expect(awaitingRes.status).toBe(409);
+    expect((await awaitingRes.json()).error).toBe('MODALITY_AWAITING_CONFIGURATION');
+  });
+
+  it('valida integridade da resposta /v1/probabilities/specialized do motor Python (rejeita custo/invariante divergente)', async () => {
+    const prevUrl = process.env.MATH_ENGINE_URL;
+    const prevTimeout = process.env.MATH_ENGINE_TIMEOUT_MS;
+
+    const specializedAnalysis = computeSpecializedModalityAnalysis({
+      lotteryCode: 'mega-sena',
+      universeSize: 60,
+      drawnCount: 6,
+      chosenCount: 7,
+      minNumbersToChoose: 6,
+      maxNumbersToChoose: 20,
+      prizeTiers: MEGA_SENA_TIERS,
+      simpleBetPriceCents: 600,
+      priceUpdatedAt: '2025-07-10T00:00:00.000Z',
+      priceSource: 'https://loterias.caixa.gov.br/Paginas/Mega-Sena.aspx',
+      simpleGamesCount: 7,
+    });
+
+    function toSnakeMemory(m: typeof specializedAnalysis.anyPrize.memory) {
+      return {
+        title: m.title,
+        formula: m.formula,
+        substituted_parameters: m.substitutedParameters,
+        raw_numerator: m.rawNumerator,
+        raw_denominator: m.rawDenominator,
+        simplified_fraction: m.simplifiedFraction,
+        decimal_probability: m.decimalProbability,
+        percentage_formatted: m.percentageFormatted,
+        scientific_notation: m.scientificNotation,
+        odds_one_in: m.oddsOneIn,
+        plain_explanation: m.plainExplanation,
+      };
+    }
+
+    function toSnakeHit(h: (typeof specializedAnalysis.distribution)[number]) {
+      return {
+        hits: h.hits,
+        probability: h.probability,
+        raw_numerator: h.rawNumerator,
+        raw_denominator: h.rawDenominator,
+        exact_numerator: h.exactNumerator,
+        exact_denominator: h.exactDenominator,
+        scientific_notation: h.scientificNotation,
+        is_impossible: h.isImpossible,
+        precision_classification: h.precisionClassification,
+        odds_one_in: h.oddsOneIn,
+        tier_name: h.tierName,
+        is_prize_tier: h.isPrizeTier,
+        is_main_prize: h.isMainPrize,
+        embedded_simple_wins: h.embeddedSimpleWins.map((w) => ({
+          tier_name: w.tierName,
+          target_hits: w.targetHits,
+          winning_simple_combinations: w.winningSimpleCombinations,
+        })),
+        memory: toSnakeMemory(h.memory),
+      };
+    }
+
+    function buildValidSpecializedPythonPayload() {
+      const distByHits: Record<string, ReturnType<typeof toSnakeHit>> = {};
+      for (const item of specializedAnalysis.distribution) {
+        distByHits[String(item.hits)] = toSnakeHit(item);
+      }
+      const distSum = specializedAnalysis.distribution.reduce((a, b) => a + b.probability, 0);
+      return {
+        lottery_code: 'mega-sena',
+        math_model_type: 'hypergeometric_single_group',
+        universe_size: 60,
+        drawn_count: 6,
+        chosen_count: 7,
+        total_space_simple_combinations: specializedAnalysis.totalSpaceSimpleCombinations,
+        total_combinations: specializedAnalysis.totalChosenCombinations,
+        distribution_by_hits: distByHits,
+        distribution_sum: distSum,
+        distribution_sum_tolerance: DISTRIBUTION_SUM_TOLERANCE,
+        prize_tiers: specializedAnalysis.prizeTiers.map(toSnakeHit),
+        any_prize: {
+          label: specializedAnalysis.anyPrize.label,
+          probability: specializedAnalysis.anyPrize.probability,
+          raw_numerator: specializedAnalysis.anyPrize.rawNumerator,
+          raw_denominator: specializedAnalysis.anyPrize.rawDenominator,
+          exact_numerator: specializedAnalysis.anyPrize.exactNumerator,
+          exact_denominator: specializedAnalysis.anyPrize.exactDenominator,
+          scientific_notation: specializedAnalysis.anyPrize.scientificNotation,
+          odds_one_in: specializedAnalysis.anyPrize.oddsOneIn,
+          precision_classification: specializedAnalysis.anyPrize.precisionClassification,
+          memory: toSnakeMemory(specializedAnalysis.anyPrize.memory),
+        },
+        no_prize: {
+          label: specializedAnalysis.noPrize.label,
+          probability: specializedAnalysis.noPrize.probability,
+          raw_numerator: specializedAnalysis.noPrize.rawNumerator,
+          raw_denominator: specializedAnalysis.noPrize.rawDenominator,
+          exact_numerator: specializedAnalysis.noPrize.exactNumerator,
+          exact_denominator: specializedAnalysis.noPrize.exactDenominator,
+          scientific_notation: specializedAnalysis.noPrize.scientificNotation,
+          odds_one_in: specializedAnalysis.noPrize.oddsOneIn,
+          precision_classification: specializedAnalysis.noPrize.precisionClassification,
+          memory: toSnakeMemory(specializedAnalysis.noPrize.memory),
+        },
+        multiple_bet: {
+          chosen_count: 7,
+          drawn_count: 6,
+          is_multiple_bet: true,
+          equivalent_simple_bets: specializedAnalysis.multipleBet.equivalentSimpleBets,
+          simple_bet_price_cents: 600,
+          total_cost_cents: specializedAnalysis.multipleBet.totalCostCents,
+          price_updated_at: specializedAnalysis.multipleBet.priceUpdatedAt,
+          price_source: specializedAnalysis.multipleBet.priceSource,
+          combinatorial_coverage: {
+            numerator: specializedAnalysis.multipleBet.combinatorialCoverage.numerator,
+            denominator: specializedAnalysis.multipleBet.combinatorialCoverage.denominator,
+            simplified_numerator:
+              specializedAnalysis.multipleBet.combinatorialCoverage.simplifiedNumerator,
+            simplified_denominator:
+              specializedAnalysis.multipleBet.combinatorialCoverage.simplifiedDenominator,
+            probability: specializedAnalysis.multipleBet.combinatorialCoverage.probability,
+            scientific_notation:
+              specializedAnalysis.multipleBet.combinatorialCoverage.scientificNotation,
+            odds_one_in: specializedAnalysis.multipleBet.combinatorialCoverage.oddsOneIn,
+          },
+        },
+        simple_games_comparison: {
+          simple_games_count: 7,
+          simple_bet_price_cents: 600,
+          total_cost_cents: '4200',
+          top_prize_exact: {
+            numerator: specializedAnalysis.simpleGamesComparison.topPrizeExact.numerator,
+            denominator: specializedAnalysis.simpleGamesComparison.topPrizeExact.denominator,
+            simplified_numerator:
+              specializedAnalysis.simpleGamesComparison.topPrizeExact.simplifiedNumerator,
+            simplified_denominator:
+              specializedAnalysis.simpleGamesComparison.topPrizeExact.simplifiedDenominator,
+            probability: specializedAnalysis.simpleGamesComparison.topPrizeExact.probability,
+            scientific_notation:
+              specializedAnalysis.simpleGamesComparison.topPrizeExact.scientificNotation,
+            odds_one_in: specializedAnalysis.simpleGamesComparison.topPrizeExact.oddsOneIn,
+          },
+          expected_winning_games_per_draw:
+            specializedAnalysis.simpleGamesComparison.expectedWinningGamesPerDraw,
+          independent_model_any_prize_probability:
+            specializedAnalysis.simpleGamesComparison.independentModelAnyPrizeProbability,
+          equiprobability_notice: specializedAnalysis.simpleGamesComparison.equiprobabilityNotice,
+        },
+        comparison_rows: specializedAnalysis.comparisonRows.map((r) => ({
+          chosen_count: r.chosenCount,
+          is_selected: r.isSelected,
+          equivalent_simple_bets: r.equivalentSimpleBets,
+          total_cost_cents: r.totalCostCents,
+          total_space_combinations: r.totalSpaceCombinations,
+          main_prize_hits: r.mainPrizeHits,
+          main_prize_probability: r.mainPrizeProbability,
+          main_prize_odds_one_in: r.mainPrizeOddsOneIn,
+          any_prize_probability: r.anyPrizeProbability,
+          any_prize_odds_one_in: r.anyPrizeOddsOneIn,
+          no_prize_probability: r.noPrizeProbability,
+          coverage_factor_vs_minimum: r.coverageFactorVsMinimum,
+        })),
+        axiom_notice: specializedAnalysis.equiprobabilityAxiom,
+        execution_source: 'python_fastapi_engine',
+        engine_status: 'verified_combinatorics',
+      };
+    }
+
+    let mode: 'ok' | 'bad_cost' | 'bad_invariant' = 'ok';
+    const stub = http.createServer((req, res) => {
+      if (req.url === '/v1/probabilities/specialized' && req.method === 'POST') {
+        const body = buildValidSpecializedPythonPayload();
+        if (mode === 'bad_cost') {
+          body.multiple_bet.total_cost_cents = '999999';
+        } else if (mode === 'bad_invariant') {
+          body.no_prize.exact_numerator = '1';
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
+      }
+    });
+
+    try {
+      const stubUrl = await new Promise<string>((resolve) => {
+        stub.listen(0, '127.0.0.1', () => {
+          const addr = stub.address() as { port: number };
+          resolve(`http://127.0.0.1:${addr.port}`);
+        });
+      });
+
+      process.env.MATH_ENGINE_URL = stubUrl;
+      process.env.MATH_ENGINE_TIMEOUT_MS = '250';
+
+      const reqBody = JSON.stringify({
+        lotteryId: 1,
+        lotteryCode: 'mega-sena',
+        chosenCount: 7,
+        simpleGamesCount: 7,
+      });
+
+      // Sucesso validado
+      mode = 'ok';
+      const okRes = await fetch(`${baseUrl}/api/math/python/specialized`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: reqBody,
+      });
+      expect(okRes.status).toBe(200);
+      const okJson = await okRes.json();
+      expect(okJson.execution_source).toBe('python_fastapi_engine');
+      expect(okJson.multiple_bet.total_cost_cents).toBe('4200');
+
+      // Rejeita custo adulterado -> 502
+      mode = 'bad_cost';
+      const badCostRes = await fetch(`${baseUrl}/api/math/python/specialized`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: reqBody,
+      });
+      expect(badCostRes.status).toBe(502);
+      expect((await badCostRes.json()).error).toBe('MATH_ENGINE_INTEGRITY_ERROR');
+
+      // Rejeita violação de invariante any_prize + no_prize == 1/1 -> 502
+      mode = 'bad_invariant';
+      const badInvRes = await fetch(`${baseUrl}/api/math/python/specialized`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: reqBody,
+      });
+      expect(badInvRes.status).toBe(502);
+      expect((await badInvRes.json()).error).toBe('MATH_ENGINE_INTEGRITY_ERROR');
+    } finally {
+      process.env.MATH_ENGINE_URL = prevUrl;
+      process.env.MATH_ENGINE_TIMEOUT_MS = prevTimeout;
+      if (stub.listening) {
+        await new Promise<void>((r) => stub.close(() => r()));
+      }
+    }
+  });
+});
+

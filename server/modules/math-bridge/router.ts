@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { computeSpecializedModalityAnalysis } from '../../../src/modules/probabilities/specialized.ts';
 import { validateBody } from '../../middleware/validate.ts';
 import {
   MathEngineError,
   checkPythonEngineHealth,
   computeLocalTheoreticalDistribution,
+  requestPythonSpecializedProbability,
   requestPythonTheoreticalProbability,
 } from './client.ts';
 import {
@@ -26,6 +28,12 @@ const theoreticalRequestSchema = z
     universeSize: z.number().int().min(1).max(1000).optional(),
     drawnCount: z.number().int().min(0).max(1000).optional(),
     chosenCount: z.number().int().min(0).max(1000),
+  })
+  .strict();
+
+const specializedRequestSchema = theoreticalRequestSchema
+  .extend({
+    simpleGamesCount: z.number().int().min(1).max(1_000_000).optional(),
   })
   .strict();
 
@@ -51,6 +59,58 @@ export function createMathRouter(
         lotteryCode: validated.lotteryCode,
         modalityContext: validated.modalityContext,
         ...result,
+      });
+    } catch (error) {
+      if (error instanceof ModalityValidationError) {
+        return res.status(error.statusCode).json({
+          error: error.code,
+          message: error.message,
+        });
+      }
+      return res.status(400).json({
+        error: 'COMBINATORIAL_VALIDATION_ERROR',
+        message: error instanceof Error ? error.message : 'Parâmetros inválidos.',
+      });
+    }
+  });
+
+  /**
+   * Análise especializada local em Node.js (BigInt exato) para modalidades verificadas
+   * (faixas oficiais, P(premiação) vs P(sem prêmio), apostas simples vs múltiplas, memória de cálculo).
+   */
+  router.post('/local/specialized', validateBody(specializedRequestSchema), async (req, res) => {
+    try {
+      const payload = req.body as z.infer<typeof specializedRequestSchema>;
+      const validated = await resolveAndValidateTheoreticalInput(
+        { ...payload, mode: 'modality' },
+        repository
+      );
+      if (validated.modalityContext.mode !== 'modality') {
+        return res.status(400).json({
+          error: 'MODALITY_REQUIRED',
+          message: 'O cálculo especializado requer uma modalidade verificada.',
+        });
+      }
+      const ctx = validated.modalityContext;
+      const specialized = computeSpecializedModalityAnalysis({
+        lotteryCode: ctx.lotteryCode,
+        mathModelType: ctx.mathModelType,
+        universeSize: ctx.universeSize,
+        drawnCount: ctx.drawnCount,
+        chosenCount: ctx.chosenCount,
+        minNumbersToChoose: ctx.minNumbersToChoose,
+        maxNumbersToChoose: ctx.maxNumbersToChoose,
+        prizeTiers: ctx.prizeTiers,
+        simpleBetPriceCents: ctx.simpleBetPriceCents,
+        priceUpdatedAt: ctx.priceUpdatedAt,
+        priceSource: ctx.priceSource,
+        simpleGamesCount: payload.simpleGamesCount,
+      });
+
+      return res.json({
+        executionSource: 'nodejs_local_bigint',
+        modalityContext: ctx,
+        ...specialized,
       });
     } catch (error) {
       if (error instanceof ModalityValidationError) {
@@ -121,6 +181,62 @@ export function createMathRouter(
         });
       }
       console.error('Unexpected error calling Python math engine:', error);
+      return res.status(503).json({
+        error: 'MATH_ENGINE_UNAVAILABLE',
+        message: 'Falha de comunicação com o motor matemático Python.',
+      });
+    }
+  });
+
+  /**
+   * Execução especializada via HTTP no microsserviço Python FastAPI (/v1/probabilities/specialized).
+   */
+  router.post('/python/specialized', validateBody(specializedRequestSchema), async (req, res) => {
+    try {
+      const payload = req.body as z.infer<typeof specializedRequestSchema>;
+      const validated = await resolveAndValidateTheoreticalInput(
+        { ...payload, mode: 'modality' },
+        repository
+      );
+      if (validated.modalityContext.mode !== 'modality') {
+        return res.status(400).json({
+          error: 'MODALITY_REQUIRED',
+          message: 'O cálculo especializado requer uma modalidade verificada.',
+        });
+      }
+      const ctx = validated.modalityContext;
+      const result = await requestPythonSpecializedProbability({
+        lotteryCode: ctx.lotteryCode,
+        mathModelType: ctx.mathModelType,
+        universeSize: ctx.universeSize,
+        drawnCount: ctx.drawnCount,
+        chosenCount: ctx.chosenCount,
+        minNumbersToChoose: ctx.minNumbersToChoose,
+        maxNumbersToChoose: ctx.maxNumbersToChoose,
+        prizeTiers: ctx.prizeTiers,
+        simpleBetPriceCents: ctx.simpleBetPriceCents,
+        priceUpdatedAt: ctx.priceUpdatedAt,
+        priceSource: ctx.priceSource,
+        simpleGamesCount: payload.simpleGamesCount,
+      });
+      return res.json({
+        ...result,
+        modalityContext: ctx,
+      });
+    } catch (error) {
+      if (error instanceof ModalityValidationError) {
+        return res.status(error.statusCode).json({
+          error: error.code,
+          message: error.message,
+        });
+      }
+      if (error instanceof MathEngineError) {
+        return res.status(error.statusCode).json({
+          error: error.code,
+          message: error.message,
+        });
+      }
+      console.error('Unexpected error calling Python specialized math engine:', error);
       return res.status(503).json({
         error: 'MATH_ENGINE_UNAVAILABLE',
         message: 'Falha de comunicação com o motor matemático Python.',

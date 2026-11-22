@@ -7,6 +7,11 @@ import {
   selectActiveVerifiedRuleVersion,
 } from '../../../src/modules/probabilities/rule-validity.ts';
 
+import type {
+  LotteryMathModelType,
+  PrizeTierConfigItem,
+} from '../../../src/modules/probabilities/specialized.ts';
+
 export interface ModalityRecord {
   id: number;
   code: string;
@@ -23,6 +28,13 @@ export interface ModalityRuleVersionRecord {
   numberUniverseMin: number | null;
   numberUniverseMax: number | null;
   drawnNumbersCount: number | null;
+  mathModelType?: string | null;
+  simpleBetPriceCents?: number | null;
+  priceUpdatedAt?: Date | null;
+  priceSource?: string | null;
+  prizeTiersConfig?: unknown;
+  contestStructure?: unknown;
+  specialRules?: unknown;
   officialSource: string;
   isVerified: boolean;
   isLocked: boolean;
@@ -90,6 +102,13 @@ export const postgresModalityRuleRepository: ModalityRuleRepository = {
         numberUniverseMin: lotteryRuleVersions.numberUniverseMin,
         numberUniverseMax: lotteryRuleVersions.numberUniverseMax,
         drawnNumbersCount: lotteryRuleVersions.drawnNumbersCount,
+        mathModelType: lotteryRuleVersions.mathModelType,
+        simpleBetPriceCents: lotteryRuleVersions.simpleBetPriceCents,
+        priceUpdatedAt: lotteryRuleVersions.priceUpdatedAt,
+        priceSource: lotteryRuleVersions.priceSource,
+        prizeTiersConfig: lotteryRuleVersions.prizeTiersConfig,
+        contestStructure: lotteryRuleVersions.contestStructure,
+        specialRules: lotteryRuleVersions.specialRules,
         officialSource: lotteryRuleVersions.officialSource,
         isVerified: lotteryRuleVersions.isVerified,
         isLocked: lotteryRuleVersions.isLocked,
@@ -201,9 +220,39 @@ export interface ValidatedTheoreticalExecution {
         minNumbersToChoose: number;
         maxNumbersToChoose: number;
         chosenCount: number;
+        mathModelType: LotteryMathModelType;
+        simpleBetPriceCents: number | null;
+        priceUpdatedAt: string | null;
+        priceSource: string | null;
+        prizeTiers: PrizeTierConfigItem[];
         officialSource: string;
         isVerified: true;
       };
+}
+
+function normalizePrizeTiers(raw: unknown): PrizeTierConfigItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+    .map((item, idx) => ({
+      hits: Number(item.hits),
+      tierName: String(item.tierName ?? `${item.hits} acertos`),
+      tierOrder: Number(item.tierOrder ?? idx + 1),
+      isMainPrize: Boolean(item.isMainPrize),
+    }))
+    .filter((t) => Number.isInteger(t.hits) && t.hits >= 0);
+}
+
+function normalizeMathModelType(raw: string | null | undefined): LotteryMathModelType {
+  if (
+    raw === 'multi_group_combinatorial' ||
+    raw === 'positional_columns' ||
+    raw === 'multi_extraction' ||
+    raw === 'extra_field_combinatorial'
+  ) {
+    return raw;
+  }
+  return 'hypergeometric_single_group';
 }
 
 function parseExplicitReferenceDate(raw: string): Date {
@@ -545,6 +594,13 @@ export async function resolveAndValidateTheoreticalInput(
       minNumbersToChoose: minChoose,
       maxNumbersToChoose: maxChoose,
       chosenCount: input.chosenCount,
+      mathModelType: normalizeMathModelType(selectedRule.mathModelType),
+      simpleBetPriceCents: selectedRule.simpleBetPriceCents ?? null,
+      priceUpdatedAt: selectedRule.priceUpdatedAt
+        ? selectedRule.priceUpdatedAt.toISOString()
+        : null,
+      priceSource: selectedRule.priceSource ?? null,
+      prizeTiers: normalizePrizeTiers(selectedRule.prizeTiersConfig),
       officialSource: selectedRule.officialSource,
       isVerified: true,
     },

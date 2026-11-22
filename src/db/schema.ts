@@ -74,6 +74,10 @@ export const lotteryRuleVersions = pgTable(
     numberUniverseMin: integer('number_universe_min'),
     numberUniverseMax: integer('number_universe_max'),
     drawnNumbersCount: integer('drawn_numbers_count'),
+    mathModelType: text('math_model_type').notNull().default('hypergeometric_single_group'),
+    simpleBetPriceCents: integer('simple_bet_price_cents'),
+    priceUpdatedAt: timestamp('price_updated_at', { withTimezone: true }),
+    priceSource: text('price_source'),
     prizeTiersConfig: jsonb('prize_tiers_config'),
     specialRules: jsonb('special_rules'),
     extraFieldsConfig: jsonb('extra_fields_config'),
@@ -89,6 +93,10 @@ export const lotteryRuleVersions = pgTable(
     uniqueIndex('uq_lottery_rule_version').on(table.lotteryTypeId, table.versionNumber),
     index('idx_rule_versions_validity').on(table.lotteryTypeId, table.validFrom, table.validTo),
     check('chk_rule_version_positive', sql`${table.versionNumber} >= 1`),
+    check(
+      'chk_rule_price_non_negative',
+      sql`${table.simpleBetPriceCents} IS NULL OR ${table.simpleBetPriceCents} >= 0`
+    ),
     check(
       'chk_rule_validity_range',
       sql`${table.validTo} IS NULL OR ${table.validTo} > ${table.validFrom}`

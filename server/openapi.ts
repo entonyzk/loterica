@@ -9,9 +9,9 @@ export function buildOpenApiSpec() {
     openapi: '3.1.0',
     info: {
       title: 'LOTUS AI REST API',
-      version: '1.1.0-stage1',
+      version: '2.0.0-stage2',
       description:
-        'Contratos REST da plataforma LOTUS AI (Etapa 1). Rotas implementadas e rotas planejadas para etapas futuras estão explicitamente distinguidas via `x-lotus-status`.',
+        'Contratos REST da plataforma LOTUS AI (Etapa 2 — Motor Matemático Especializado). Rotas implementadas e rotas planejadas para etapas futuras estão explicitamente distinguidas via `x-lotus-status`.',
     },
     servers: [
       {
@@ -200,6 +200,36 @@ export function buildOpenApiSpec() {
           },
         },
       },
+      '/api/math/local/specialized': {
+        post: {
+          summary: 'Cálculo especializado completo por modalidade (Mega-Sena, Lotofácil) em BigInt exato',
+          description:
+            'Calcula faixas oficiais de premiação, probabilidade de premiar vs. não premiar, apostas simples vs. múltiplas com custo verificado, desdobramento e memória de cálculo.',
+          'x-lotus-status': 'implemented',
+          responses: {
+            '200': { description: 'Análise matemática especializada completa' },
+            '400': { description: 'Parâmetros inválidos ou fora dos limites da modalidade' },
+            '404': { description: 'Modalidade ou concurso não encontrado' },
+            '409': { description: 'Modalidade aguardando configuração ou regra fora de vigência' },
+          },
+        },
+      },
+      '/api/math/python/specialized': {
+        post: {
+          summary: 'Executa cálculo especializado por modalidade no microsserviço Python FastAPI',
+          'x-lotus-status': 'implemented',
+          responses: {
+            '200': { description: 'Resultado especializado validado do motor Python' },
+            '400': { description: 'Parâmetros inválidos' },
+            '404': { description: 'Modalidade não encontrada' },
+            '409': { description: 'Modalidade sem regra vigente verificada' },
+            '501': { description: 'Modelo estrutural preparado aguardando ativação' },
+            '502': { description: 'Divergência matemática ou contrato inválido do motor Python' },
+            '503': { description: 'Motor Python indisponível' },
+            '504': { description: 'Timeout do motor Python' },
+          },
+        },
+      },
       '/api/users/profile': {
         get: {
           summary: 'Perfil autenticado do usuário sincronizado com PostgreSQL',
@@ -289,7 +319,7 @@ export function buildOpenApiSpec() {
       },
     },
     'x-lotus-architecture': {
-      stage: 'Etapa 1',
+      stage: 'Etapa 2',
       axiom: MATHEMATICAL_INDEPENDENCE_AXIOM,
       mathEngine: getMathEngineArchitectureStatus(),
       geminiConfigured: isGeminiConfigured(),

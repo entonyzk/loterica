@@ -207,3 +207,111 @@ def test_pydantic_strict_validation_rejects_invalid_types_and_bounds(invalid_pay
     with pytest.raises(pydantic.ValidationError):
         TheoreticalProbabilityRequest(**invalid_payload)
 
+
+def test_specialized_mega_sena_and_lotofacil_models():
+    from app.models import resolve_lottery_model
+
+    mega = resolve_lottery_model("mega-sena", "hypergeometric_single_group")
+    mega_tiers = [
+        {"hits": 6, "tier_name": "Sena", "tier_order": 1, "is_main_prize": True},
+        {"hits": 5, "tier_name": "Quina", "tier_order": 2, "is_main_prize": False},
+        {"hits": 4, "tier_name": "Quadra", "tier_order": 3, "is_main_prize": False},
+    ]
+
+    # Mega-Sena 7 dezenas (desdobramento: 7 jogos simples, R$ 42,00)
+    res_mega7 = mega.compute_specialized(
+        lottery_code="mega-sena",
+        universe_size=60,
+        drawn_count=6,
+        chosen_count=7,
+        min_numbers_to_choose=6,
+        max_numbers_to_choose=20,
+        prize_tiers=mega_tiers,
+        simple_bet_price_cents=600,
+        price_updated_at="2025-07-10T00:00:00.000Z",
+        price_source="https://loterias.caixa.gov.br",
+        simple_games_count=7,
+    )
+    assert res_mega7["multiple_bet"]["equivalent_simple_bets"] == "7"
+    assert res_mega7["multiple_bet"]["total_cost_cents"] == "4200"
+    assert res_mega7["distribution_by_hits"]["6"]["embedded_simple_wins"] == [
+        {"tier_name": "Sena", "target_hits": 6, "winning_simple_combinations": "1"},
+        {"tier_name": "Quina", "target_hits": 5, "winning_simple_combinations": "6"},
+    ]
+    any_f = Fraction(int(res_mega7["any_prize"]["exact_numerator"]), int(res_mega7["any_prize"]["exact_denominator"]))
+    no_f = Fraction(int(res_mega7["no_prize"]["exact_numerator"]), int(res_mega7["no_prize"]["exact_denominator"]))
+    assert any_f + no_f == Fraction(1, 1)
+
+    # Lotofácil 16 dezenas (desdobramento: 16 jogos simples, R$ 56,00)
+    loto = resolve_lottery_model("lotofacil", "hypergeometric_single_group")
+    loto_tiers = [
+        {"hits": h, "tier_name": f"{h} acertos", "tier_order": 16 - h, "is_main_prize": h == 15}
+        for h in range(15, 10, -1)
+    ]
+    res_loto16 = loto.compute_specialized(
+        lottery_code="lotofacil",
+        universe_size=25,
+        drawn_count=15,
+        chosen_count=16,
+        min_numbers_to_choose=15,
+        max_numbers_to_choose=20,
+        prize_tiers=loto_tiers,
+        simple_bet_price_cents=350,
+        price_updated_at="2025-07-09T00:00:00.000Z",
+        price_source="https://loterias.caixa.gov.br",
+        simple_games_count=16,
+    )
+    assert res_loto16["multiple_bet"]["equivalent_simple_bets"] == "16"
+    assert res_loto16["multiple_bet"]["total_cost_cents"] == "5600"
+    assert res_loto16["distribution_by_hits"]["5"]["is_impossible"] is True
+    assert res_loto16["distribution_by_hits"]["5"]["probability"] == 0.0
+    loto_any = Fraction(int(res_loto16["any_prize"]["exact_numerator"]), int(res_loto16["any_prize"]["exact_denominator"]))
+    loto_no = Fraction(int(res_loto16["no_prize"]["exact_numerator"]), int(res_loto16["no_prize"]["exact_denominator"]))
+    assert loto_any + loto_no == Fraction(1, 1)
+
+
+def test_fastapi_specialized_endpoints():
+    fastapi_testclient = pytest.importorskip("fastapi.testclient")
+    from app.main import app
+
+    client = fastapi_testclient.TestClient(app)
+
+    models_res = client.get("/v1/models")
+    assert models_res.status_code == 200
+    model_types = {m["model_type"] for m in models_res.json()["models"]}
+    assert {"hypergeometric_single_group", "positional_columns", "multi_extraction", "extra_field_combinatorial"}.issubset(model_types)
+
+    spec_res = client.post(
+        "/v1/probabilities/specialized",
+        json={
+            "lottery_code": "mega-sena",
+            "math_model_type": "hypergeometric_single_group",
+            "universe_size": 60,
+            "drawn_count": 6,
+            "chosen_count": 20,
+            "min_numbers_to_choose": 6,
+            "max_numbers_to_choose": 20,
+            "prize_tiers": [
+                {"hits": 6, "tier_name": "Sena", "tier_order": 1, "is_main_prize": True},
+                {"hits": 5, "tier_name": "Quina", "tier_order": 2, "is_main_prize": False},
+                {"hits": 4, "tier_name": "Quadra", "tier_order": 3, "is_main_prize": False},
+            ],
+            "simple_bet_price_cents": 600,
+        },
+    )
+    assert spec_res.status_code == 200
+    body = spec_res.json()
+    assert body["multiple_bet"]["equivalent_simple_bets"] == "38760"
+    assert body["multiple_bet"]["total_cost_cents"] == "23256000"
+
+    unimplemented = client.post(
+        "/v1/probabilities/specialized",
+        json={
+            "lottery_code": "super-sete",
+            "math_model_type": "positional_columns",
+            "universe_size": 10,
+            "drawn_count": 7,
+            "chosen_count": 7,
+        },
+    )
+    assert unimplemented.status_code == 501

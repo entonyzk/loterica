@@ -646,3 +646,321 @@ export async function requestPythonTheoreticalProbability(params: {
 
   return parsed.data;
 }
+
+// --- Integração Especializada (Etapa 2): /v1/probabilities/specialized ---
+
+const pythonCalculationMemorySchema = z.object({
+  title: z.string(),
+  formula: z.string(),
+  substituted_parameters: z.string(),
+  raw_numerator: z.string().regex(/^\d+$/),
+  raw_denominator: z.string().regex(/^\d+$/),
+  simplified_fraction: z.string(),
+  decimal_probability: z.number().finite().min(0).max(1),
+  percentage_formatted: z.string(),
+  scientific_notation: z.string(),
+  odds_one_in: z.string().nullable(),
+  plain_explanation: z.string(),
+});
+
+const pythonSpecializedHitSchema = pythonHitDetailSchema.extend({
+  odds_one_in: z.string().nullable(),
+  tier_name: z.string().nullable(),
+  is_prize_tier: z.boolean(),
+  is_main_prize: z.boolean(),
+  embedded_simple_wins: z.array(
+    z.object({
+      tier_name: z.string(),
+      target_hits: z.number().int().min(0),
+      winning_simple_combinations: z.string().regex(/^\d+$/),
+    })
+  ),
+  memory: pythonCalculationMemorySchema,
+});
+
+const pythonAggregateProbSchema = z.object({
+  label: z.string(),
+  probability: z.number().finite().min(0).max(1),
+  raw_numerator: z.string().regex(/^\d+$/),
+  raw_denominator: z.string().regex(/^\d+$/),
+  exact_numerator: z.string().regex(/^\d+$/),
+  exact_denominator: z.string().regex(/^\d+$/),
+  scientific_notation: z.string(),
+  odds_one_in: z.string().nullable(),
+  precision_classification: z.enum(['exact', 'exact_rational_with_float_approximation']),
+  memory: pythonCalculationMemorySchema,
+});
+
+const pythonSpecializedResponseSchema = z.object({
+  lottery_code: z.string(),
+  math_model_type: z.string(),
+  universe_size: z.number().int().min(1).max(1000),
+  drawn_count: z.number().int().min(0).max(1000),
+  chosen_count: z.number().int().min(0).max(1000),
+  total_space_simple_combinations: z.string().regex(/^\d+$/),
+  total_combinations: z.string().regex(/^\d+$/),
+  distribution_by_hits: z.record(z.string(), pythonSpecializedHitSchema),
+  distribution_sum: z.number().finite(),
+  distribution_sum_tolerance: z.number().positive(),
+  prize_tiers: z.array(pythonSpecializedHitSchema),
+  any_prize: pythonAggregateProbSchema,
+  no_prize: pythonAggregateProbSchema,
+  multiple_bet: z.object({
+    chosen_count: z.number().int(),
+    drawn_count: z.number().int(),
+    is_multiple_bet: z.boolean(),
+    equivalent_simple_bets: z.string().regex(/^\d+$/),
+    simple_bet_price_cents: z.number().int().nullable(),
+    total_cost_cents: z.string().regex(/^\d+$/).nullable(),
+    price_updated_at: z.string().nullable(),
+    price_source: z.string().nullable(),
+    combinatorial_coverage: z.object({
+      numerator: z.string().regex(/^\d+$/),
+      denominator: z.string().regex(/^\d+$/),
+      simplified_numerator: z.string().regex(/^\d+$/),
+      simplified_denominator: z.string().regex(/^\d+$/),
+      probability: z.number().finite().min(0).max(1),
+      scientific_notation: z.string(),
+      odds_one_in: z.string().nullable(),
+    }),
+  }),
+  simple_games_comparison: z.object({
+    simple_games_count: z.number().int().min(1),
+    simple_bet_price_cents: z.number().int().nullable(),
+    total_cost_cents: z.string().regex(/^\d+$/).nullable(),
+    top_prize_exact: z.object({
+      numerator: z.string().regex(/^\d+$/),
+      denominator: z.string().regex(/^\d+$/),
+      simplified_numerator: z.string().regex(/^\d+$/),
+      simplified_denominator: z.string().regex(/^\d+$/),
+      probability: z.number().finite().min(0).max(1),
+      scientific_notation: z.string(),
+      odds_one_in: z.string().nullable(),
+    }),
+    expected_winning_games_per_draw: z.number().finite().min(0),
+    independent_model_any_prize_probability: z.number().finite().min(0).max(1),
+    equiprobability_notice: z.string(),
+  }),
+  comparison_rows: z.array(
+    z.object({
+      chosen_count: z.number().int(),
+      is_selected: z.boolean(),
+      equivalent_simple_bets: z.string().regex(/^\d+$/),
+      total_cost_cents: z.string().regex(/^\d+$/).nullable(),
+      total_space_combinations: z.string().regex(/^\d+$/),
+      main_prize_hits: z.number().int(),
+      main_prize_probability: z.number().finite().min(0).max(1),
+      main_prize_odds_one_in: z.string().nullable(),
+      any_prize_probability: z.number().finite().min(0).max(1),
+      any_prize_odds_one_in: z.string().nullable(),
+      no_prize_probability: z.number().finite().min(0).max(1),
+      coverage_factor_vs_minimum: z.string(),
+    })
+  ),
+  axiom_notice: z.string(),
+  execution_source: z.literal('python_fastapi_engine'),
+  engine_status: z.literal('verified_combinatorics'),
+});
+
+export type PythonSpecializedResponse = z.infer<typeof pythonSpecializedResponseSchema>;
+
+export function validatePythonSpecializedIntegrity(
+  params: {
+    lotteryCode: string;
+    mathModelType: string;
+    universeSize: number;
+    drawnCount: number;
+    chosenCount: number;
+    simpleBetPriceCents: number | null;
+  },
+  data: PythonSpecializedResponse
+): void {
+  validatePythonTheoreticalIntegrity(
+    {
+      lotteryCode: params.lotteryCode,
+      universeSize: params.universeSize,
+      drawnCount: params.drawnCount,
+      chosenCount: params.chosenCount,
+    },
+    data
+  );
+
+  if (data.math_model_type !== params.mathModelType) {
+    throw new MathEngineError(
+      'MATH_ENGINE_INTEGRITY_ERROR',
+      502,
+      `Modelo matemático divergente: esperado "${params.mathModelType}", recebido "${data.math_model_type}".`
+    );
+  }
+
+  const expectedSpaceSimple = exactCombinationsBigInt(params.universeSize, params.drawnCount);
+  if (BigInt(data.total_space_simple_combinations) !== expectedSpaceSimple) {
+    throw new MathEngineError(
+      'MATH_ENGINE_INTEGRITY_ERROR',
+      502,
+      'Espaço amostral simples C(N, k) divergente na resposta especializada Python.'
+    );
+  }
+
+  const expectedEqSimple =
+    params.chosenCount >= params.drawnCount
+      ? exactCombinationsBigInt(params.chosenCount, params.drawnCount)
+      : 0n;
+  if (BigInt(data.multiple_bet.equivalent_simple_bets) !== expectedEqSimple) {
+    throw new MathEngineError(
+      'MATH_ENGINE_INTEGRITY_ERROR',
+      502,
+      'Quantidade de combinações simples equivalentes C(m, k) divergente.'
+    );
+  }
+
+  if (params.simpleBetPriceCents !== null) {
+    const expectedCost = expectedEqSimple * BigInt(params.simpleBetPriceCents);
+    if (
+      data.multiple_bet.total_cost_cents === null ||
+      BigInt(data.multiple_bet.total_cost_cents) !== expectedCost
+    ) {
+      throw new MathEngineError(
+        'MATH_ENGINE_INTEGRITY_ERROR',
+        502,
+        'Custo total calculado pelo motor Python diverge do preço oficial verificado.'
+      );
+    }
+  }
+
+  // Verifica soma exata: any_prize + no_prize == 1/1
+  const anyNum = BigInt(data.any_prize.exact_numerator);
+  const anyDen = BigInt(data.any_prize.exact_denominator);
+  const noNum = BigInt(data.no_prize.exact_numerator);
+  const noDen = BigInt(data.no_prize.exact_denominator);
+  if (anyDen <= 0n || noDen <= 0n || anyNum * noDen + noNum * anyDen !== anyDen * noDen) {
+    throw new MathEngineError(
+      'MATH_ENGINE_INTEGRITY_ERROR',
+      502,
+      'Invariante P(Premiação) + P(Sem Prêmio) = 1/1 violada na resposta Python.'
+    );
+  }
+}
+
+export async function requestPythonSpecializedProbability(params: {
+  lotteryCode: string;
+  mathModelType: string;
+  universeSize: number;
+  drawnCount: number;
+  chosenCount: number;
+  minNumbersToChoose: number;
+  maxNumbersToChoose: number;
+  prizeTiers: Array<{
+    hits: number;
+    tierName: string;
+    tierOrder: number;
+    isMainPrize: boolean;
+  }>;
+  simpleBetPriceCents: number | null;
+  priceUpdatedAt: string | null;
+  priceSource: string | null;
+  simpleGamesCount?: number;
+}) {
+  validateCombinatorialParams(params.universeSize, params.drawnCount, params.chosenCount);
+  const baseUrl = resolvePythonBaseUrl();
+  const timeoutMs = getMathEngineTimeoutMs();
+
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}/v1/probabilities/specialized`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        lottery_code: params.lotteryCode,
+        math_model_type: params.mathModelType,
+        universe_size: params.universeSize,
+        drawn_count: params.drawnCount,
+        chosen_count: params.chosenCount,
+        min_numbers_to_choose: params.minNumbersToChoose,
+        max_numbers_to_choose: params.maxNumbersToChoose,
+        prize_tiers: params.prizeTiers.map((t) => ({
+          hits: t.hits,
+          tier_name: t.tierName,
+          tier_order: t.tierOrder,
+          is_main_prize: t.isMainPrize,
+        })),
+        simple_bet_price_cents: params.simpleBetPriceCents,
+        price_updated_at: params.priceUpdatedAt,
+        price_source: params.priceSource,
+        ...(params.simpleGamesCount !== undefined
+          ? { simple_games_count: params.simpleGamesCount }
+          : {}),
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    const isTimeout =
+      error instanceof Error &&
+      (error.name === 'TimeoutError' || error.name === 'AbortError');
+    console.error('[math-bridge] Python specialized request failed:', error);
+    throw new MathEngineError(
+      isTimeout ? 'MATH_ENGINE_TIMEOUT' : 'MATH_ENGINE_UNAVAILABLE',
+      isTimeout ? 504 : 503,
+      isTimeout
+        ? `Motor matemático Python excedeu o tempo limite de ${timeoutMs}ms.`
+        : 'Motor matemático Python indisponível no momento.',
+      { cause: error }
+    );
+  }
+
+  if (response.status === 422 || response.status === 501) {
+    const errBody = await response.json().catch(() => ({}));
+    throw new MathEngineError(
+      response.status === 501 ? 'MATH_MODEL_NOT_IMPLEMENTED' : 'MATH_ENGINE_VALIDATION_ERROR',
+      response.status,
+      typeof errBody.detail === 'string'
+        ? errBody.detail
+        : 'Parâmetros ou modelo rejeitados pelo motor matemático Python.'
+    );
+  }
+
+  if (!response.ok) {
+    throw new MathEngineError(
+      'MATH_ENGINE_UPSTREAM_ERROR',
+      502,
+      `Motor matemático Python respondeu com erro HTTP ${response.status}.`
+    );
+  }
+
+  const rawJson = await response.json().catch((err) => {
+    throw new MathEngineError(
+      'MATH_ENGINE_INVALID_RESPONSE',
+      502,
+      'Motor matemático Python retornou JSON malformado.',
+      { cause: err }
+    );
+  });
+
+  const parsed = pythonSpecializedResponseSchema.safeParse(rawJson);
+  if (!parsed.success) {
+    console.error('[math-bridge] Invalid Python specialized response:', parsed.error.issues);
+    throw new MathEngineError(
+      'MATH_ENGINE_INVALID_RESPONSE',
+      502,
+      'Resposta especializada do motor Python não atende ao contrato validado.'
+    );
+  }
+
+  validatePythonSpecializedIntegrity(
+    {
+      lotteryCode: params.lotteryCode,
+      mathModelType: params.mathModelType,
+      universeSize: params.universeSize,
+      drawnCount: params.drawnCount,
+      chosenCount: params.chosenCount,
+      simpleBetPriceCents: params.simpleBetPriceCents,
+    },
+    parsed.data
+  );
+
+  return parsed.data;
+}
+

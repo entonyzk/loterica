@@ -57,13 +57,32 @@ lotteriesRouter.get('/', validateQuery(listQuerySchema), async (req, res) => {
         specialEvents: allEvents.filter((e) => e.lotteryTypeId === lottery.id),
         ruleVersionsCount: rules.length,
         activeRuleVersionId: activeRule?.id ?? null,
+        activeRuleSummary: activeRule
+          ? {
+              id: activeRule.id,
+              versionNumber: activeRule.versionNumber,
+              mathModelType: activeRule.mathModelType,
+              numberUniverseMin: activeRule.numberUniverseMin,
+              numberUniverseMax: activeRule.numberUniverseMax,
+              drawnNumbersCount: activeRule.drawnNumbersCount,
+              minNumbersToChoose: activeRule.minNumbersToChoose,
+              maxNumbersToChoose: activeRule.maxNumbersToChoose,
+              simpleBetPriceCents: activeRule.simpleBetPriceCents,
+              priceUpdatedAt: activeRule.priceUpdatedAt,
+              priceSource: activeRule.priceSource,
+              prizeTiersConfig: activeRule.prizeTiersConfig,
+              officialSource: activeRule.officialSource,
+              validFrom: activeRule.validFrom,
+              validTo: activeRule.validTo,
+            }
+          : null,
       };
     });
 
     const hasVerifiedActiveRules = items.some((item) => item.activeRuleVersionId !== null);
 
     return res.json({
-      stage: 'etapa-1-fundacao',
+      stage: 'etapa-2-motor-especializado',
       referenceDate: referenceNow.toISOString(),
       rulesVerified: hasVerifiedActiveRules,
       total: items.length,

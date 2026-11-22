@@ -46,18 +46,42 @@ describe('Integração — PostgreSQL (Cloud SQL / TEST_SQL_*) e Autenticação 
     }
   });
 
-  it('consulta catálogo de modalidades e concursos no PostgreSQL sem regras/resultados inventados', async () => {
+  it('consulta catálogo de modalidades e concursos no PostgreSQL com Mega-Sena/Lotofácil verificadas e demais aguardando configuração', async () => {
     const lotRes = await fetch(`${baseUrl}/api/lotteries`);
     expect(lotRes.status).toBe(200);
     const lotData = await lotRes.json();
-    expect(lotData.rulesVerified).toBe(false);
+    expect(lotData.stage).toBe('etapa-2-motor-especializado');
+    expect(lotData.rulesVerified).toBe(true);
     expect(lotData.total).toBeGreaterThanOrEqual(8);
+
+    const megaItem = lotData.items.find((i: { code: string }) => i.code === 'mega-sena');
+    const lotofacilItem = lotData.items.find((i: { code: string }) => i.code === 'lotofacil');
+    const quinaItem = lotData.items.find((i: { code: string }) => i.code === 'quina');
+    expect(megaItem.status).toBe('active');
+    expect(megaItem.activeRuleSummary.simpleBetPriceCents).toBe(600);
+    expect(lotofacilItem.status).toBe('active');
+    expect(lotofacilItem.activeRuleSummary.simpleBetPriceCents).toBe(350);
+    expect(quinaItem.status).toBe('awaiting_rules');
+    expect(quinaItem.activeRuleSummary).toBeNull();
 
     const detailRes = await fetch(`${baseUrl}/api/lotteries/mega-sena`);
     expect(detailRes.status).toBe(200);
     const detailJson = await detailRes.json();
     expect(detailJson.code).toBe('mega-sena');
+    expect(detailJson.activeRuleVersionId).not.toBeNull();
     expect(Array.isArray(detailJson.ruleVersions)).toBe(true);
+    expect(detailJson.ruleVersions.length).toBeGreaterThanOrEqual(2);
+
+    // Data histórica em 2024 deve selecionar tarifa anterior (R$ 5,00 / R$ 3,00)
+    const megaHistRes = await fetch(
+      `${baseUrl}/api/lotteries/mega-sena?referenceDate=2024-06-01T12:00:00.000Z`
+    );
+    expect(megaHistRes.status).toBe(200);
+    const megaHistJson = await megaHistRes.json();
+    const megaActiveHist = megaHistJson.ruleVersions.find(
+      (r: { id: number }) => r.id === megaHistJson.activeRuleVersionId
+    );
+    expect(megaActiveHist.simpleBetPriceCents).toBe(500);
 
     const notFound = await fetch(`${baseUrl}/api/lotteries/999999`);
     expect(notFound.status).toBe(404);
@@ -71,21 +95,56 @@ describe('Integração — PostgreSQL (Cloud SQL / TEST_SQL_*) e Autenticação 
     expect(contestsJson.hasVerifiedSourceData).toBe(false);
   });
 
-  it('valida regras verificadas no PostgreSQL para cálculos por modalidade e bloqueia parâmetros arbitrários', async () => {
-    // 1. Modalidade da Etapa 1 sem regra verificada (mega-sena) rejeita cálculo por modalidade com 409
+  it('valida regras verificadas no PostgreSQL para Mega-Sena, Lotofácil, modalidades aguardando configuração e parâmetros arbitrários', async () => {
+    // 1. Modalidade ainda sem regra verificada (quina) rejeita cálculo por modalidade com 409
     const awaitingRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         mode: 'modality',
-        lotteryCode: 'mega-sena',
-        universeSize: 60,
-        drawnCount: 6,
-        chosenCount: 6,
+        lotteryCode: 'quina',
+        universeSize: 80,
+        drawnCount: 5,
+        chosenCount: 5,
       }),
     });
     expect(awaitingRes.status).toBe(409);
     expect((await awaitingRes.json()).error).toBe('MODALITY_AWAITING_CONFIGURATION');
+
+    // 1b. Cálculo especializado no banco real para Mega-Sena (m=7, tarifa vigente R$ 6,00 -> R$ 42,00)
+    const megaSpecRes = await fetch(`${baseUrl}/api/math/local/specialized`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryCode: 'mega-sena',
+        chosenCount: 7,
+        simpleGamesCount: 7,
+      }),
+    });
+    expect(megaSpecRes.status).toBe(200);
+    const megaSpecJson = await megaSpecRes.json();
+    expect(megaSpecJson.totalChosenCombinations).toBe('386206920');
+    expect(megaSpecJson.multipleBet.equivalentSimpleBets).toBe('7');
+    expect(megaSpecJson.multipleBet.totalCostCents).toBe('4200');
+    expect(megaSpecJson.prizeTiers.length).toBe(3);
+
+    // 1c. Cálculo especializado no banco real para Lotofácil (m=16, tarifa vigente R$ 3,50 -> R$ 56,00)
+    const lotoSpecRes = await fetch(`${baseUrl}/api/math/local/specialized`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'modality',
+        lotteryCode: 'lotofacil',
+        chosenCount: 16,
+      }),
+    });
+    expect(lotoSpecRes.status).toBe(200);
+    const lotoSpecJson = await lotoSpecRes.json();
+    expect(lotoSpecJson.totalChosenCombinations).toBe('2042975'); // C(25,16)
+    expect(lotoSpecJson.multipleBet.equivalentSimpleBets).toBe('16');
+    expect(lotoSpecJson.multipleBet.totalCostCents).toBe('5600');
+    expect(lotoSpecJson.prizeTiers.length).toBe(5);
 
     // 2. Modo Parâmetros Livres continua operando independentemente do catálogo
     const freeRes = await fetch(`${baseUrl}/api/math/local/theoretical`, {

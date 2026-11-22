@@ -38,10 +38,19 @@ function installFetchMock(options?: { withVerifiedRule?: boolean }) {
                     id: 10,
                     versionNumber: 1,
                     minNumbersToChoose: 6,
-                    maxNumbersToChoose: 10,
+                    maxNumbersToChoose: 20,
                     numberUniverseMin: 1,
                     numberUniverseMax: 60,
                     drawnNumbersCount: 6,
+                    mathModelType: 'hypergeometric_single_group',
+                    simpleBetPriceCents: 600,
+                    priceUpdatedAt: '2025-07-10T00:00:00.000Z',
+                    priceSource: 'https://loterias.caixa.gov.br/Paginas/Mega-Sena.aspx',
+                    prizeTiersConfig: [
+                      { hits: 6, tierName: 'Sena', tierOrder: 1, isMainPrize: true },
+                      { hits: 5, tierName: 'Quina', tierOrder: 2, isMainPrize: false },
+                      { hits: 4, tierName: 'Quadra', tierOrder: 3, isMainPrize: false },
+                    ],
                     officialSource: 'Fonte Verificada Teste',
                     isVerified: true,
                     isLocked: false,
@@ -228,4 +237,56 @@ describe('Unitários UI — Responsividade e Laboratório Matemático', () => {
       await screen.findByText(/Regra v0 \(ID #9\) carregada automaticamente:/i)
     ).toBeInTheDocument();
   });
+
+  it('exibe calculadora especializada Etapa 2 (faixas, apostas múltiplas, comparador e memória de cálculo)', async () => {
+    installFetchMock({ withVerifiedRule: true });
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Laboratório matemático/i }));
+    await screen.findByRole('heading', { name: 'Laboratório Matemático' });
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Por Modalidade' }));
+    expect(
+      await screen.findByText(/Regra v1 \(ID #10\) carregada automaticamente:/i)
+    ).toBeInTheDocument();
+
+    // KPIs da Etapa 2 e preço oficial
+    expect(screen.getByText(/Probabilidade de Premiação/i)).toBeInTheDocument();
+    expect(screen.getByText(/Prob\. de Não Premiar/i)).toBeInTheDocument();
+    const costMatches = screen.getAllByText(/R\$\s*6,00/);
+    expect(costMatches.length).toBeGreaterThan(0);
+
+    // Abrir memória de cálculo da premiação global
+    const memButtons = screen.getAllByRole('button', { name: 'Memória' });
+    fireEvent.click(memButtons[0]);
+    expect(
+      await screen.findByText(/Memória de Cálculo Racional Exato \(BigInt\)/i)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Fórmula, Substituição & Aproximação Decimal/i)).toBeInTheDocument();
+
+    // Acionar validação especializada no motor Python na aba Probabilidades & Faixas
+    fireEvent.click(
+      screen.getByRole('button', { name: /Validar Modelo Especializado no Python/i })
+    );
+    const fetchMock = vi.mocked(globalThis.fetch);
+    const specializedCall = fetchMock.mock.calls.find(
+      ([url]) => typeof url === 'string' && url.includes('/api/math/python/specialized')
+    );
+    expect(specializedCall).toBeDefined();
+
+    // Alternar para aba Apostas Simples vs. Múltiplas
+    fireEvent.click(screen.getByRole('tab', { name: 'Apostas Simples vs. Múltiplas' }));
+    expect(
+      await screen.findByRole('heading', { name: /Calculadora de Apostas Simples vs\. Múltiplas/i })
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Igualar custo/i })).toBeInTheDocument();
+
+    // Alternar para aba Comparador Matemático
+    fireEvent.click(screen.getByRole('tab', { name: 'Comparador Matemático' }));
+    expect(
+      await screen.findByRole('heading', { name: /Comparador Matemático \(Mega-Sena\)/i })
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Princípio de Equiprobabilidade:/i)).toBeInTheDocument();
+  });
 });
+

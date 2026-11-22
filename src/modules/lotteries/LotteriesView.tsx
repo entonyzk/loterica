@@ -10,6 +10,29 @@ interface SpecialEventItem {
   applicableRules: { note?: string } | null;
 }
 
+interface ActiveRuleSummary {
+  id: number;
+  versionNumber: number;
+  mathModelType: string;
+  numberUniverseMin: number | null;
+  numberUniverseMax: number | null;
+  drawnNumbersCount: number | null;
+  minNumbersToChoose: number | null;
+  maxNumbersToChoose: number | null;
+  simpleBetPriceCents: number | null;
+  priceUpdatedAt: string | null;
+  priceSource: string | null;
+  prizeTiersConfig?: Array<{
+    hits: number;
+    tierName: string;
+    tierOrder: number;
+    isMainPrize: boolean;
+  }> | null;
+  officialSource: string;
+  validFrom: string;
+  validTo: string | null;
+}
+
 interface LotteryItem {
   id: number;
   name: string;
@@ -18,13 +41,24 @@ interface LotteryItem {
   status: string;
   specialEvents: SpecialEventItem[];
   ruleVersionsCount: number;
+  activeRuleVersionId?: number | null;
+  activeRuleSummary?: ActiveRuleSummary | null;
+  currentRulesSummary?: { preparedModelType?: string } | null;
   updatedAt: string;
+}
+
+function formatBrlFromCents(cents: number | null | undefined): string {
+  if (cents == null) return 'Não informado';
+  return (cents / 100).toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  });
 }
 
 export const LotteriesView: React.FC = () => {
   const [lotteries, setLotteries] = useState<LotteryItem[]>([]);
   const [selected, setSelected] = useState<LotteryItem | null>(null);
-  const [filter, setFilter] = useState<'all' | 'with_events' | 'awaiting_rules'>('all');
+  const [filter, setFilter] = useState<'all' | 'active' | 'with_events' | 'awaiting_rules'>('all');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +89,7 @@ export const LotteriesView: React.FC = () => {
 
   const filtered = useMemo(() => {
     return lotteries.filter((item) => {
+      if (filter === 'active' && !item.activeRuleSummary) return false;
       if (filter === 'with_events' && item.specialEvents.length === 0) return false;
       if (filter === 'awaiting_rules' && item.status !== 'awaiting_rules') return false;
       if (search.trim()) {
@@ -67,6 +102,8 @@ export const LotteriesView: React.FC = () => {
     });
   }, [lotteries, filter, search]);
 
+  const activeRule = selected?.activeRuleSummary ?? null;
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -75,15 +112,15 @@ export const LotteriesView: React.FC = () => {
             Catálogo de Modalidades
           </h1>
           <p className="mt-1 text-sm text-neutral-400">
-            Estrutura relacional flexível em PostgreSQL. Concursos especiais herdam a modalidade
-            principal sem duplicar regras matemáticas independentes.
+            Regras oficiais versionadas em PostgreSQL com vigência temporal, fonte documental e
+            modelos matemáticos especializados por modalidade.
           </p>
         </div>
       </div>
 
       {/* Filtros e Busca */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-1 rounded-lg border border-white/8 bg-[#12141A] p-1">
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-white/8 bg-[#12141A] p-1">
           <button
             type="button"
             onClick={() => setFilter('all')}
@@ -94,6 +131,17 @@ export const LotteriesView: React.FC = () => {
             }`}
           >
             Todas ({lotteries.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setFilter('active')}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+              filter === 'active'
+                ? 'bg-[#D4AF37] text-[#0A0B0E]'
+                : 'text-neutral-300 hover:text-white'
+            }`}
+          >
+            Regras Verificadas
           </button>
           <button
             type="button"
@@ -154,6 +202,7 @@ export const LotteriesView: React.FC = () => {
             ) : (
               filtered.map((item) => {
                 const isActive = selected?.id === item.id;
+                const hasVerified = Boolean(item.activeRuleSummary);
                 return (
                   <button
                     key={item.id}
@@ -177,7 +226,9 @@ export const LotteriesView: React.FC = () => {
                         </span>
                       </div>
                       <p className="mt-1 truncate text-xs text-neutral-400">
-                        Aguardando regras oficiais (Etapa 2)
+                        {hasVerified
+                          ? `Regra v${item.activeRuleSummary?.versionNumber} verificada · Aposta simples ${formatBrlFromCents(item.activeRuleSummary?.simpleBetPriceCents)}`
+                          : 'Aguardando regras oficiais verificadas'}
                         {item.specialEvents.length > 0
                           ? ` · ${item.specialEvents.map((e) => e.name).join(', ')}`
                           : ''}
@@ -215,29 +266,84 @@ export const LotteriesView: React.FC = () => {
                   </p>
                 </div>
 
-                {/* Campos preparados em lottery_rule_versions */}
                 <div className="border-t border-white/8 pt-5">
                   <h3 className="text-xs font-semibold text-neutral-200">
-                    Estrutura de Configuração Preparada (`lottery_rule_versions`)
+                    {activeRule
+                      ? `Regra Oficial Vigente v${activeRule.versionNumber} (Verificada)`
+                      : 'Estrutura de Configuração Preparada (`lottery_rule_versions`)'}
                   </h3>
                   <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
                     <div className="flex justify-between border-b border-white/6 pb-2">
                       <dt className="text-neutral-400">Mín. / Máx. de dezenas</dt>
-                      <dd className="font-mono-tabular text-neutral-300">Etapa 2 (Verificação)</dd>
+                      <dd className="font-mono-tabular text-neutral-200">
+                        {activeRule
+                          ? `${activeRule.minNumbersToChoose} a ${activeRule.maxNumbersToChoose} dezenas`
+                          : 'Aguardando verificação'}
+                      </dd>
                     </div>
                     <div className="flex justify-between border-b border-white/6 pb-2">
                       <dt className="text-neutral-400">Universo numérico</dt>
-                      <dd className="font-mono-tabular text-neutral-300">Etapa 2 (Verificação)</dd>
+                      <dd className="font-mono-tabular text-neutral-200">
+                        {activeRule
+                          ? `${activeRule.numberUniverseMin} a ${activeRule.numberUniverseMax}`
+                          : 'Aguardando verificação'}
+                      </dd>
                     </div>
                     <div className="flex justify-between border-b border-white/6 pb-2">
                       <dt className="text-neutral-400">Dezenas sorteadas</dt>
-                      <dd className="font-mono-tabular text-neutral-300">Etapa 2 (Verificação)</dd>
+                      <dd className="font-mono-tabular text-neutral-200">
+                        {activeRule ? `${activeRule.drawnNumbersCount} números` : 'Aguardando verificação'}
+                      </dd>
                     </div>
                     <div className="flex justify-between border-b border-white/6 pb-2">
-                      <dt className="text-neutral-400">Faixas e campos extras</dt>
-                      <dd className="font-mono-tabular text-neutral-300">JSONB Versionado</dd>
+                      <dt className="text-neutral-400">Modelo matemático</dt>
+                      <dd className="font-mono-tabular text-[#C4B5FD]">
+                        {activeRule?.mathModelType ??
+                          selected.currentRulesSummary?.preparedModelType ??
+                          'hypergeometric_single_group'}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between border-b border-white/6 pb-2">
+                      <dt className="text-neutral-400">Aposta simples oficial</dt>
+                      <dd className="font-mono-tabular text-[#E5C158]">
+                        {activeRule
+                          ? formatBrlFromCents(activeRule.simpleBetPriceCents)
+                          : 'Não cadastrada'}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between border-b border-white/6 pb-2">
+                      <dt className="text-neutral-400">Atualização do preço</dt>
+                      <dd className="font-mono-tabular text-neutral-300">
+                        {activeRule?.priceUpdatedAt
+                          ? activeRule.priceUpdatedAt.slice(0, 10)
+                          : '—'}
+                      </dd>
                     </div>
                   </dl>
+
+                  {activeRule && (
+                    <div className="mt-4 space-y-2 text-xs text-neutral-400">
+                      {Array.isArray(activeRule.prizeTiersConfig) &&
+                        activeRule.prizeTiersConfig.length > 0 && (
+                          <p>
+                            <span className="text-neutral-300 font-medium">Faixas oficiais:</span>{' '}
+                            {activeRule.prizeTiersConfig
+                              .map((t) => `${t.tierName} (${t.hits})`)
+                              .join(' · ')}
+                          </p>
+                        )}
+                      <p className="break-words">
+                        <span className="text-neutral-300 font-medium">Fonte oficial:</span>{' '}
+                        {activeRule.officialSource}
+                      </p>
+                      {activeRule.priceSource && (
+                        <p className="break-words">
+                          <span className="text-neutral-300 font-medium">Fonte da tabela de preços:</span>{' '}
+                          {activeRule.priceSource}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Eventos Especiais Vinculados */}

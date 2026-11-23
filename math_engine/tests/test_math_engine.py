@@ -502,3 +502,210 @@ def test_registry_validation_rejects_unknown_and_mismatched_modalities():
             prize_tiers=[{"hits": 6}],
         )
 
+
+def test_etapa3_constrained_universe_and_budget_exact():
+    from math import comb
+    from app.combinations import analyze_constrained_universe
+
+    # Mega-Sena: 60 números, aposta de 6, 2 fixos, 10 excluídos -> C(48, 4) = 194.580
+    res = analyze_constrained_universe(
+        lottery_code="mega-sena",
+        universe_size=60,
+        drawn_count=6,
+        chosen_count=6,
+        fixed_numbers=[1, 2],
+        excluded_numbers=[51, 52, 53, 54, 55, 56, 57, 58, 59, 60],
+        desired_games_count=20,
+        max_budget_cents=7500,  # R$ 75,00 -> cabe 12 apostas de R$ 6,00
+        simple_bet_price_cents=600,
+        price_updated_at="2025-07-10T00:00:00.000Z",
+        price_source="CAIXA",
+    )
+    assert res["combinatorics"]["total_unrestricted_combinations"] == str(comb(60, 6))
+    assert res["combinatorics"]["restricted_combinations"] == str(comb(48, 4))
+    assert res["budget_and_costs"]["affordable_games_count"] == "12"
+    assert res["budget_and_costs"]["planned_games_count"] == "12"
+    assert res["budget_and_costs"]["planned_total_cost_cents"] == "7200"
+    assert res["budget_and_costs"]["remaining_budget_cents"] == "300"
+    assert res["budget_and_costs"]["left_out_by_budget"] == "8"
+    assert res["combinatorics"]["permutations_k_from_m"] == "720"
+
+
+def test_etapa3_rejects_fixed_excluded_conflicts():
+    from app.combinations import analyze_constrained_universe
+
+    with pytest.raises(ValueError, match="Conflito"):
+        analyze_constrained_universe(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            chosen_count=6,
+            fixed_numbers=[10],
+            excluded_numbers=[10],
+        )
+
+    with pytest.raises(ValueError, match="excede"):
+        analyze_constrained_universe(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            chosen_count=6,
+            fixed_numbers=[1, 2, 3, 4, 5, 6, 7],
+            excluded_numbers=[],
+        )
+
+
+def test_etapa3_bet_set_analysis_and_exact_coverage():
+    from math import comb
+    from app.combinations import analyze_bet_set, analyze_subset_coverage
+
+    bets = [
+        [1, 2, 3, 4, 5, 6],
+        [1, 2, 3, 4, 5, 6],  # repetida
+        [1, 2, 7, 8, 9, 10],
+    ]
+    analysis = analyze_bet_set(
+        lottery_code="mega-sena",
+        universe_size=60,
+        drawn_count=6,
+        chosen_count=6,
+        bets=bets,
+        fixed_numbers=[1, 2],
+        excluded_numbers=[60],
+        simple_bet_price_cents=600,
+    )
+    assert analysis["counts"]["submitted_bets_count"] == 3
+    assert analysis["counts"]["distinct_bets_count"] == 2
+    assert analysis["counts"]["repeated_bets_count"] == 1
+    assert analysis["costs"]["wasted_on_duplicates_cents"] == "600"
+    assert analysis["intersections"]["distinct_pair_count"] == 1
+    assert analysis["intersections"]["min_overlap"] == 2
+    assert analysis["redundancy"]["distinct_simple_combinations"] == "2"
+
+    # Cobertura de pares (t=2) sobre pool pequeno de 6 números {1..6}
+    # 1 aposta [1,2,3,4,5,6] cobre C(6,2)=15 de 15 pares -> 100% comprovada
+    cov_full = analyze_subset_coverage(
+        lottery_code="mega-sena",
+        universe_size=60,
+        drawn_count=6,
+        chosen_count=6,
+        bets=[[1, 2, 3, 4, 5, 6]],
+        target_subset_size=2,
+        pool_numbers=[1, 2, 3, 4, 5, 6],
+    )
+    assert cov_full["coverage"]["is_full_coverage_proven"] is True
+    assert cov_full["coverage"]["uncovered_subsets_count"] == "0"
+    assert cov_full["coverage"]["coverage_fraction"] == "1 / 1"
+
+    # Pool de 7 números {1..7} com 1 aposta [1..6] -> faltam 6 pares com o 7 -> não pode afirmar 100%
+    cov_partial = analyze_subset_coverage(
+        lottery_code="mega-sena",
+        universe_size=60,
+        drawn_count=6,
+        chosen_count=6,
+        bets=[[1, 2, 3, 4, 5, 6]],
+        target_subset_size=2,
+        pool_numbers=[1, 2, 3, 4, 5, 6, 7],
+    )
+    assert cov_partial["coverage"]["is_full_coverage_proven"] is False
+    assert cov_partial["coverage"]["covered_subsets_count"] == str(comb(6, 2))
+    assert cov_partial["coverage"]["uncovered_subsets_count"] == str(comb(7, 2) - comb(6, 2))
+    assert len(cov_partial["uncovered_sample"]) == 6
+
+
+def test_etapa3_controlled_generator_zero_duplicates_and_methods():
+    from app.combinations import generate_controlled_bets
+
+    # Enumeração exaustiva em espaço pequeno: 4 fixos e 4 livres -> C(4, 2) = 6 combinações
+    exh = generate_controlled_bets(
+        lottery_code="mega-sena",
+        universe_size=60,
+        drawn_count=6,
+        chosen_count=6,
+        fixed_numbers=[1, 2, 3, 4],
+        excluded_numbers=list(range(9, 61)),
+        desired_games_count=10,
+        method="exhaustive",
+        simple_bet_price_cents=600,
+    )
+    assert exh["generation_summary"]["generated_count"] == 6
+    assert exh["generation_summary"]["duplicates_count"] == 0
+    assert exh["method_classification"]["is_exact_solution"] is True
+    assert all(set([1, 2, 3, 4]).issubset(b) for b in exh["generated_bets"])
+
+    # Heurística gulosa + orçamento limitado a R$ 30,00 (5 apostas) + filtros
+    heur = generate_controlled_bets(
+        lottery_code="mega-sena",
+        universe_size=60,
+        drawn_count=6,
+        chosen_count=6,
+        fixed_numbers=[10],
+        excluded_numbers=[1, 2],
+        desired_games_count=12,
+        method="combinatorial_search",
+        coverage_target_t=2,
+        seed=42,
+        max_budget_cents=3000,
+        simple_bet_price_cents=600,
+        min_even=2,
+        max_even=4,
+    )
+    assert heur["generation_summary"]["generated_count"] == 5
+    assert heur["generation_summary"]["duplicates_count"] == 0
+    assert heur["method_classification"]["is_exact_solution"] is False
+    assert heur["method_classification"]["is_proven_optimal_covering"] is False
+    for bet in heur["generated_bets"]:
+        assert 10 in bet
+        assert 1 not in bet and 2 not in bet
+        evens = sum(1 for n in bet if n % 2 == 0)
+        assert 2 <= evens <= 4
+
+
+def test_etapa3_compare_strategies_and_fastapi_endpoints():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+
+    compare_payload = {
+        "lottery_code": "mega-sena",
+        "math_model_type": "hypergeometric_single_group",
+        "universe_size": 60,
+        "drawn_count": 6,
+        "min_numbers_to_choose": 6,
+        "max_numbers_to_choose": 20,
+        "prize_tiers": [
+            {"hits": 6, "tier_name": "Sena", "tier_order": 1, "is_main_prize": True},
+            {"hits": 5, "tier_name": "Quina", "tier_order": 2, "is_main_prize": False},
+            {"hits": 4, "tier_name": "Quadra", "tier_order": 3, "is_main_prize": False},
+        ],
+        "simple_bet_price_cents": 600,
+        "strategies": [
+            {
+                "name": "Amostragem 6d",
+                "chosen_count": 6,
+                "desired_games_count": 5,
+                "method": "uniform_sampling",
+                "coverage_target_t": 2,
+                "seed": 11,
+            },
+            {
+                "name": "Heurística 6d",
+                "chosen_count": 6,
+                "desired_games_count": 5,
+                "method": "coverage_heuristic",
+                "coverage_target_t": 2,
+                "seed": 11,
+            },
+        ],
+    }
+
+    resp = client.post("/v1/combinations/compare", json=compare_payload)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["strategies_count"] == 2
+    assert body["strategies"][0]["total_cost_cents"] == "3000"
+    assert body["strategies"][1]["delta_vs_baseline"]["cost_cents"] == "0"
+    assert body["strategies"][0]["probabilities"]["exact_union_status"] == "exact_union_computed"
+
+

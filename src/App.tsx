@@ -9,6 +9,7 @@ import {
   Layers,
   Menu,
   Shield,
+  Sigma,
   Sliders,
   Sparkles,
   User,
@@ -17,6 +18,7 @@ import {
 import { AnimatePresence, motion } from 'motion/react';
 import { AuthProvider, useAuth } from './modules/auth/AuthContext';
 import { AdminView } from './modules/admin/AdminView';
+import { CombinationsLabView } from './modules/combinations/CombinationsLabView';
 import { HistoryView } from './modules/contests/HistoryView';
 import { LotteriesView } from './modules/lotteries/LotteriesView';
 import { MathLabView } from './modules/probabilities/MathLabView';
@@ -39,6 +41,7 @@ const MAIN_MENU: MenuItem[] = [
   { id: 'loterias', label: 'Loterias', icon: Layers },
   { id: 'estatisticas', label: 'Estatísticas', icon: BarChart3, planned: true },
   { id: 'laboratorio', label: 'Laboratório matemático', icon: Cpu },
+  { id: 'combinacoes', label: 'Laboratório de Combinações', icon: Sigma },
   { id: 'simulador', label: 'Simulador', icon: Activity, planned: true },
   { id: 'gerador', label: 'Gerador de jogos', icon: Sparkles, planned: true },
   { id: 'fechamentos', label: 'Fechamentos', icon: Grid, planned: true },
@@ -278,6 +281,7 @@ const LotusShell: React.FC = () => {
             {activeSection === 'inicio' && <OverviewDashboard onNavigate={navigateTo} />}
             {activeSection === 'loterias' && <LotteriesView />}
             {activeSection === 'laboratorio' && <MathLabView />}
+            {activeSection === 'combinacoes' && <CombinationsLabView />}
             {activeSection === 'historico' && <HistoryView />}
             {activeSection === 'conta' && <AccountView />}
             {activeSection === 'admin' && <AdminView />}

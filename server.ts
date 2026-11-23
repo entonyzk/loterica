@@ -70,7 +70,7 @@ export function createApp() {
     res.json({
       service: 'lotus-ai-api',
       status: 'operational',
-      stage: 'Etapa 2 — Motor Matemático Especializado',
+      stage: 'Etapa 3 — Laboratório Avançado de Combinações',
       environment: isProd ? 'production' : 'development',
       database: 'postgresql-cloudsql',
       axiom: MATHEMATICAL_INDEPENDENCE_AXIOM,

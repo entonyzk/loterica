@@ -7,6 +7,7 @@ export type NavSectionId =
   | 'loterias'
   | 'estatisticas'
   | 'laboratorio'
+  | 'combinacoes'
   | 'simulador'
   | 'gerador'
   | 'fechamentos'
@@ -68,9 +69,15 @@ const MODULE_ROADMAP = [
     status: 'Implementado',
   },
   {
+    name: 'Laboratório Avançado de Combinações (Fixos, Cobertura, Gerador e Comparador)',
+    module: 'Laboratório de Combinações',
+    stage: 'Etapa 3',
+    status: 'Implementado',
+  },
+  {
     name: 'Ingestão de Resultados Históricos e Concursos Oficiais',
     module: 'Dados Históricos & Concursos',
-    stage: 'Etapa 3',
+    stage: 'Etapa 3+',
     status: 'Planejado',
   },
   {
@@ -158,9 +165,9 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({ onNavigate
         <div className="flex flex-col justify-between rounded-xl border border-white/8 bg-[#12141A] p-6 lg:col-span-7 lg:p-8">
           <div className="space-y-4">
             <div className="flex items-center gap-2 text-xs text-neutral-400">
-              <span className="text-[#E5C158] font-medium">Etapa 2</span>
+              <span className="text-[#E5C158] font-medium">Etapa 3</span>
               <span aria-hidden="true">·</span>
-              <span>Motor Matemático Especializado e Combinatória Verificável</span>
+              <span>Motor Matemático Especializado & Laboratório de Combinações</span>
             </div>
 
             <h1 className="font-display text-2xl font-semibold tracking-tight text-[#F1F2F4] sm:text-3xl text-balance">
@@ -266,8 +273,15 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({ onNavigate
             </svg>
           </div>
 
-          <div className="flex items-center justify-between border-t border-white/8 pt-4">
-            <span className="text-xs text-neutral-400">Combinatória exata em BigInt</span>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/8 pt-4">
+            <button
+              type="button"
+              onClick={() => onNavigate('combinacoes')}
+              className="inline-flex items-center gap-1 text-xs font-medium text-neutral-300 hover:text-white cursor-pointer whitespace-nowrap"
+            >
+              Laboratório de Combinações
+              <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
             <button
               type="button"
               onClick={() => onNavigate('laboratorio')}
@@ -381,7 +395,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({ onNavigate
               Mapa de Implementação da Plataforma
             </h2>
             <p className="mt-0.5 text-xs text-neutral-400">
-              Transparência de entregas até a Etapa 2 (atual) e etapas seguintes
+              Transparência de entregas até a Etapa 3 (atual) e etapas seguintes
             </p>
           </div>
           <button

@@ -485,7 +485,7 @@ export function validatePythonTheoreticalIntegrity(
   }
 }
 
-function resolvePythonBaseUrl(): string {
+export function resolvePythonBaseUrl(): string {
   const raw = process.env.MATH_ENGINE_URL?.trim();
   if (!raw) {
     throw new MathEngineError(

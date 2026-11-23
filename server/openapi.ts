@@ -9,9 +9,9 @@ export function buildOpenApiSpec() {
     openapi: '3.1.0',
     info: {
       title: 'LOTUS AI REST API',
-      version: '2.0.0-stage2',
+      version: '3.0.0-stage3',
       description:
-        'Contratos REST da plataforma LOTUS AI (Etapa 2 — Motor Matemático Especializado). Rotas implementadas e rotas planejadas para etapas futuras estão explicitamente distinguidas via `x-lotus-status`.',
+        'Contratos REST da plataforma LOTUS AI (Etapa 3 — Laboratório Avançado de Combinações). Rotas implementadas e rotas planejadas para etapas futuras estão explicitamente distinguidas via `x-lotus-status`.',
     },
     servers: [
       {
@@ -232,6 +232,56 @@ export function buildOpenApiSpec() {
           },
         },
       },
+      '/api/math/python/combinations/analyze': {
+        post: {
+          summary: 'Etapa 3 — Análise de universo restrito (fixos/excluídos/livres), orçamento e conjunto submetido',
+          'x-lotus-status': 'implemented',
+          responses: {
+            '200': { description: 'Espaço restrito C(|V|, m-|F|), permutações P(m,k), análise de orçamento e conjunto' },
+            '400': { description: 'Parâmetros inválidos ou conflito fixos/excluídos' },
+            '409': { description: 'Modalidade aguardando configuração ou regra fora de vigência' },
+            '502': { description: 'Divergência matemática detectada na auditoria BigInt' },
+            '503': { description: 'Motor Python indisponível' },
+            '504': { description: 'Timeout do motor Python' },
+          },
+        },
+      },
+      '/api/math/python/combinations/coverage': {
+        post: {
+          summary: 'Etapa 3 — Estudo exato de cobertura de t-subconjuntos e multiplicidade',
+          'x-lotus-status': 'implemented',
+          responses: {
+            '200': { description: 'Subconjuntos cobertos/descobertos, fração exata e histograma de multiplicidade' },
+            '400': { description: 'Apostas ou targetSubsetSize inválidos' },
+            '502': { description: 'Divergência de integridade combinatória' },
+            '503': { description: 'Motor Python indisponível' },
+          },
+        },
+      },
+      '/api/math/python/combinations/generate': {
+        post: {
+          summary: 'Etapa 3 — Gerador controlado zero-duplicata (exaustivo, amostragem uniforme, heurística e busca combinatória)',
+          'x-lotus-status': 'implemented',
+          responses: {
+            '200': { description: 'Conjunto gerado respeitando orçamento, filtros e classificação explícita exato vs. heurístico' },
+            '400': { description: 'Restrições ou orçamento inviáveis' },
+            '502': { description: 'Divergência ou violação de integridade detectada' },
+            '503': { description: 'Motor Python indisponível' },
+          },
+        },
+      },
+      '/api/math/python/combinations/compare': {
+        post: {
+          summary: 'Etapa 3 — Comparador simultâneo de até 5 estratégias combinatórias',
+          'x-lotus-status': 'implemented',
+          responses: {
+            '200': { description: 'Comparativo completo com custos, cobertura, interseções e deltas vs. estratégia base' },
+            '400': { description: 'Quantidade ou parâmetros de estratégias inválidos' },
+            '502': { description: 'Divergência na auditoria do comparador' },
+            '503': { description: 'Motor Python indisponível' },
+          },
+        },
+      },
       '/api/users/profile': {
         get: {
           summary: 'Perfil autenticado do usuário sincronizado com PostgreSQL',
@@ -321,7 +371,7 @@ export function buildOpenApiSpec() {
       },
     },
     'x-lotus-architecture': {
-      stage: 'Etapa 2',
+      stage: 'Etapa 3',
       axiom: MATHEMATICAL_INDEPENDENCE_AXIOM,
       mathEngine: getMathEngineArchitectureStatus(),
       geminiConfigured: isGeminiConfigured(),

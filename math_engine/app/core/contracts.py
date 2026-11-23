@@ -170,3 +170,139 @@ class PlannedTaskContract(BaseModel):
     required_libraries: list[str]
     input_schema: Dict[str, Any]
     output_schema: Optional[Dict[str, Any]] = None
+
+
+# --- Contratos da Etapa 3: Laboratório Avançado de Combinações ---
+
+
+class CombinationsAnalyzeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lottery_code: StrictStr = Field(..., min_length=2, max_length=64)
+    math_model_type: Literal[
+        "hypergeometric_single_group",
+        "multi_group_combinatorial",
+        "positional_columns",
+        "multi_extraction",
+        "extra_field_combinatorial",
+    ] = "hypergeometric_single_group"
+    universe_size: StrictInt = Field(..., ge=1, le=1000)
+    drawn_count: StrictInt = Field(..., ge=1, le=1000)
+    chosen_count: StrictInt = Field(..., ge=1, le=1000)
+    min_numbers_to_choose: Optional[StrictInt] = Field(default=None, ge=1, le=1000)
+    max_numbers_to_choose: Optional[StrictInt] = Field(default=None, ge=1, le=1000)
+    prize_tiers: List[PrizeTierInput] = Field(default_factory=list)
+    simple_bet_price_cents: Optional[StrictInt] = Field(default=None, ge=0, le=10_000_000)
+    price_updated_at: Optional[StrictStr] = Field(default=None, max_length=64)
+    price_source: Optional[StrictStr] = Field(default=None, max_length=512)
+    fixed_numbers: List[StrictInt] = Field(default_factory=list)
+    excluded_numbers: List[StrictInt] = Field(default_factory=list)
+    variable_numbers: Optional[List[StrictInt]] = None
+    desired_games_count: StrictInt = Field(default=1, ge=1, le=1_000_000)
+    max_budget_cents: Optional[StrictInt] = Field(default=None, ge=0, le=1_000_000_000)
+    bets: Optional[List[List[StrictInt]]] = Field(default=None, min_length=1, max_length=500)
+
+
+class CombinationsCoverageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lottery_code: StrictStr = Field(..., min_length=2, max_length=64)
+    math_model_type: Literal[
+        "hypergeometric_single_group",
+        "multi_group_combinatorial",
+        "positional_columns",
+        "multi_extraction",
+        "extra_field_combinatorial",
+    ] = "hypergeometric_single_group"
+    universe_size: StrictInt = Field(..., ge=1, le=1000)
+    drawn_count: StrictInt = Field(..., ge=1, le=1000)
+    chosen_count: StrictInt = Field(..., ge=1, le=1000)
+    min_numbers_to_choose: Optional[StrictInt] = Field(default=None, ge=1, le=1000)
+    max_numbers_to_choose: Optional[StrictInt] = Field(default=None, ge=1, le=1000)
+    prize_tiers: List[PrizeTierInput] = Field(default_factory=list)
+    bets: List[List[StrictInt]] = Field(..., min_length=1, max_length=500)
+    target_subset_size: StrictInt = Field(..., ge=1, le=100)
+    pool_numbers: Optional[List[StrictInt]] = None
+
+
+class CombinationsGenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lottery_code: StrictStr = Field(..., min_length=2, max_length=64)
+    math_model_type: Literal[
+        "hypergeometric_single_group",
+        "multi_group_combinatorial",
+        "positional_columns",
+        "multi_extraction",
+        "extra_field_combinatorial",
+    ] = "hypergeometric_single_group"
+    universe_size: StrictInt = Field(..., ge=1, le=1000)
+    drawn_count: StrictInt = Field(..., ge=1, le=1000)
+    chosen_count: StrictInt = Field(..., ge=1, le=1000)
+    min_numbers_to_choose: Optional[StrictInt] = Field(default=None, ge=1, le=1000)
+    max_numbers_to_choose: Optional[StrictInt] = Field(default=None, ge=1, le=1000)
+    prize_tiers: List[PrizeTierInput] = Field(default_factory=list)
+    simple_bet_price_cents: Optional[StrictInt] = Field(default=None, ge=0, le=10_000_000)
+    price_updated_at: Optional[StrictStr] = Field(default=None, max_length=64)
+    price_source: Optional[StrictStr] = Field(default=None, max_length=512)
+    fixed_numbers: List[StrictInt] = Field(default_factory=list)
+    excluded_numbers: List[StrictInt] = Field(default_factory=list)
+    variable_numbers: Optional[List[StrictInt]] = None
+    desired_games_count: StrictInt = Field(default=10, ge=1, le=300)
+    method: Literal[
+        "exhaustive",
+        "uniform_sampling",
+        "coverage_heuristic",
+        "combinatorial_search",
+    ] = "uniform_sampling"
+    coverage_target_t: Optional[StrictInt] = Field(default=None, ge=1, le=100)
+    seed: Optional[StrictInt] = Field(default=None, ge=0, le=2_147_483_647)
+    max_budget_cents: Optional[StrictInt] = Field(default=None, ge=0, le=1_000_000_000)
+    min_even: Optional[StrictInt] = Field(default=None, ge=0, le=1000)
+    max_even: Optional[StrictInt] = Field(default=None, ge=0, le=1000)
+    min_sum: Optional[StrictInt] = Field(default=None, ge=0, le=100_000)
+    max_sum: Optional[StrictInt] = Field(default=None, ge=0, le=100_000)
+    max_consecutive: Optional[StrictInt] = Field(default=None, ge=1, le=1000)
+
+
+class StrategySpecInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: StrictStr = Field(..., min_length=1, max_length=80)
+    chosen_count: StrictInt = Field(..., ge=1, le=1000)
+    fixed_numbers: List[StrictInt] = Field(default_factory=list)
+    excluded_numbers: List[StrictInt] = Field(default_factory=list)
+    desired_games_count: StrictInt = Field(default=5, ge=1, le=300)
+    method: Literal[
+        "exhaustive",
+        "uniform_sampling",
+        "coverage_heuristic",
+        "combinatorial_search",
+    ] = "coverage_heuristic"
+    coverage_target_t: Optional[StrictInt] = Field(default=None, ge=1, le=100)
+    seed: Optional[StrictInt] = Field(default=None, ge=0, le=2_147_483_647)
+    max_budget_cents: Optional[StrictInt] = Field(default=None, ge=0, le=1_000_000_000)
+    bets: Optional[List[List[StrictInt]]] = Field(default=None, min_length=1, max_length=300)
+
+
+class CombinationsCompareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lottery_code: StrictStr = Field(..., min_length=2, max_length=64)
+    math_model_type: Literal[
+        "hypergeometric_single_group",
+        "multi_group_combinatorial",
+        "positional_columns",
+        "multi_extraction",
+        "extra_field_combinatorial",
+    ] = "hypergeometric_single_group"
+    universe_size: StrictInt = Field(..., ge=1, le=1000)
+    drawn_count: StrictInt = Field(..., ge=1, le=1000)
+    min_numbers_to_choose: Optional[StrictInt] = Field(default=None, ge=1, le=1000)
+    max_numbers_to_choose: Optional[StrictInt] = Field(default=None, ge=1, le=1000)
+    prize_tiers: List[PrizeTierInput] = Field(default_factory=list)
+    simple_bet_price_cents: Optional[StrictInt] = Field(default=None, ge=0, le=10_000_000)
+    price_updated_at: Optional[StrictStr] = Field(default=None, max_length=64)
+    price_source: Optional[StrictStr] = Field(default=None, max_length=512)
+    strategies: List[StrategySpecInput] = Field(..., min_length=1, max_length=5)
+

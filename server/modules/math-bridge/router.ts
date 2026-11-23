@@ -13,6 +13,12 @@ import {
   requestPythonTheoreticalProbability,
 } from './client.ts';
 import {
+  requestPythonCombinationsAnalyze,
+  requestPythonCombinationsCompare,
+  requestPythonCombinationsCoverage,
+  requestPythonCombinationsGenerate,
+} from './combinations-client.ts';
+import {
   type ModalityRuleRepository,
   ModalityValidationError,
   postgresModalityRuleRepository,
@@ -38,6 +44,86 @@ const specializedRequestSchema = theoreticalRequestSchema
   .extend({
     simpleGamesCount: z.number().int().min(1).max(1_000_000).optional(),
     simpleBets: z.array(z.array(z.number().int().min(1).max(1000)).min(1).max(100)).min(1).max(12).optional(),
+  })
+  .strict();
+
+const modalityBaseSchema = z.object({
+  mode: z.enum(['free', 'modality']).optional(),
+  lotteryId: z.number().int().positive().optional(),
+  lotteryCode: z.string().trim().min(2).max(64).default('generic-reference'),
+  ruleVersionId: z.number().int().positive().optional(),
+  contestId: z.number().int().positive().optional(),
+  contestNumber: z.number().int().positive().optional(),
+  referenceDate: z.string().trim().min(4).max(64).optional(),
+  universeSize: z.number().int().min(1).max(1000).optional(),
+  drawnCount: z.number().int().min(1).max(1000).optional(),
+});
+
+const generationMethodSchema = z.enum([
+  'exhaustive',
+  'uniform_sampling',
+  'coverage_heuristic',
+  'combinatorial_search',
+]);
+
+const combinationsAnalyzeRequestSchema = modalityBaseSchema
+  .extend({
+    chosenCount: z.number().int().min(1).max(1000),
+    fixedNumbers: z.array(z.number().int().min(1).max(1000)).default([]),
+    excludedNumbers: z.array(z.number().int().min(1).max(1000)).default([]),
+    variableNumbers: z.array(z.number().int().min(1).max(1000)).optional(),
+    desiredGamesCount: z.number().int().min(1).max(1_000_000).default(1),
+    maxBudgetCents: z.number().int().min(0).max(1_000_000_000).nullable().optional(),
+    bets: z.array(z.array(z.number().int().min(1).max(1000)).min(1).max(100)).min(1).max(500).optional(),
+  })
+  .strict();
+
+const combinationsCoverageRequestSchema = modalityBaseSchema
+  .extend({
+    chosenCount: z.number().int().min(1).max(1000),
+    bets: z.array(z.array(z.number().int().min(1).max(1000)).min(1).max(100)).min(1).max(500),
+    targetSubsetSize: z.number().int().min(1).max(100),
+    poolNumbers: z.array(z.number().int().min(1).max(1000)).optional(),
+  })
+  .strict();
+
+const combinationsGenerateRequestSchema = modalityBaseSchema
+  .extend({
+    chosenCount: z.number().int().min(1).max(1000),
+    fixedNumbers: z.array(z.number().int().min(1).max(1000)).default([]),
+    excludedNumbers: z.array(z.number().int().min(1).max(1000)).default([]),
+    variableNumbers: z.array(z.number().int().min(1).max(1000)).optional(),
+    desiredGamesCount: z.number().int().min(1).max(300).default(10),
+    method: generationMethodSchema.default('uniform_sampling'),
+    coverageTargetT: z.number().int().min(1).max(100).optional(),
+    seed: z.number().int().min(0).max(2_147_483_647).optional(),
+    maxBudgetCents: z.number().int().min(0).max(1_000_000_000).nullable().optional(),
+    minEven: z.number().int().min(0).max(1000).optional(),
+    maxEven: z.number().int().min(0).max(1000).optional(),
+    minSum: z.number().int().min(0).max(100_000).optional(),
+    maxSum: z.number().int().min(0).max(100_000).optional(),
+    maxConsecutive: z.number().int().min(1).max(1000).optional(),
+  })
+  .strict();
+
+const strategySpecSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80),
+    chosenCount: z.number().int().min(1).max(1000),
+    fixedNumbers: z.array(z.number().int().min(1).max(1000)).default([]),
+    excludedNumbers: z.array(z.number().int().min(1).max(1000)).default([]),
+    desiredGamesCount: z.number().int().min(1).max(300).default(5),
+    method: generationMethodSchema.default('coverage_heuristic'),
+    coverageTargetT: z.number().int().min(1).max(100).optional(),
+    seed: z.number().int().min(0).max(2_147_483_647).optional(),
+    maxBudgetCents: z.number().int().min(0).max(1_000_000_000).nullable().optional(),
+    bets: z.array(z.array(z.number().int().min(1).max(1000)).min(1).max(100)).min(1).max(300).optional(),
+  })
+  .strict();
+
+const combinationsCompareRequestSchema = modalityBaseSchema
+  .extend({
+    strategies: z.array(strategySpecSchema).min(1).max(5),
   })
   .strict();
 
@@ -305,6 +391,281 @@ export function createMathRouter(
       });
     }
   });
+
+  /**
+   * Etapa 3 — Laboratório de Combinações: análise do espaço restrito, fixos/excluídos,
+   * orçamento e análise combinatória de conjunto submetido (/v1/combinations/analyze).
+   */
+  router.post(
+    '/python/combinations/analyze',
+    validateBody(combinationsAnalyzeRequestSchema),
+    async (req, res) => {
+      try {
+        const payload = req.body as z.infer<typeof combinationsAnalyzeRequestSchema>;
+        if (payload.lotteryCode === 'generic-reference' || payload.mode === 'free') {
+          return res.status(400).json({
+            error: 'GENERIC_CODE_NOT_ALLOWED',
+            message:
+              'O Laboratório de Combinações opera exclusivamente com modalidades oficiais verificadas.',
+          });
+        }
+        const validated = await resolveAndValidateTheoreticalInput(
+          { ...payload, mode: 'modality' },
+          repository
+        );
+        if (validated.modalityContext.mode !== 'modality') {
+          return res.status(400).json({
+            error: 'MODALITY_REQUIRED',
+            message: 'Requer modalidade oficialmente verificada.',
+          });
+        }
+        const ctx = validated.modalityContext;
+        const result = await requestPythonCombinationsAnalyze({
+          lotteryCode: ctx.lotteryCode,
+          mathModelType: ctx.mathModelType,
+          universeSize: ctx.universeSize,
+          drawnCount: ctx.drawnCount,
+          chosenCount: ctx.chosenCount,
+          minNumbersToChoose: ctx.minNumbersToChoose,
+          maxNumbersToChoose: ctx.maxNumbersToChoose,
+          prizeTiers: ctx.prizeTiers,
+          simpleBetPriceCents: ctx.simpleBetPriceCents,
+          priceUpdatedAt: ctx.priceUpdatedAt,
+          priceSource: ctx.priceSource,
+          fixedNumbers: payload.fixedNumbers,
+          excludedNumbers: payload.excludedNumbers,
+          variableNumbers: payload.variableNumbers,
+          desiredGamesCount: payload.desiredGamesCount,
+          maxBudgetCents: payload.maxBudgetCents,
+          bets: payload.bets,
+        });
+        return res.json({
+          ...result,
+          modalityContext: ctx,
+        });
+      } catch (error) {
+        if (error instanceof ModalityValidationError) {
+          return res.status(error.statusCode).json({ error: error.code, message: error.message });
+        }
+        if (error instanceof MathEngineError) {
+          return res.status(error.statusCode).json({ error: error.code, message: error.message });
+        }
+        console.error('Unexpected error calling Python /combinations/analyze:', error);
+        return res.status(503).json({
+          error: 'MATH_ENGINE_UNAVAILABLE',
+          message: 'Falha de comunicação com o motor matemático Python.',
+        });
+      }
+    }
+  );
+
+  /**
+   * Etapa 3 — Sistema exato de estudo de cobertura de t-subconjuntos (/v1/combinations/coverage).
+   */
+  router.post(
+    '/python/combinations/coverage',
+    validateBody(combinationsCoverageRequestSchema),
+    async (req, res) => {
+      try {
+        const payload = req.body as z.infer<typeof combinationsCoverageRequestSchema>;
+        if (payload.lotteryCode === 'generic-reference' || payload.mode === 'free') {
+          return res.status(400).json({
+            error: 'GENERIC_CODE_NOT_ALLOWED',
+            message:
+              'O estudo de cobertura opera exclusivamente com modalidades oficiais verificadas.',
+          });
+        }
+        const validated = await resolveAndValidateTheoreticalInput(
+          { ...payload, mode: 'modality' },
+          repository
+        );
+        if (validated.modalityContext.mode !== 'modality') {
+          return res.status(400).json({
+            error: 'MODALITY_REQUIRED',
+            message: 'Requer modalidade oficialmente verificada.',
+          });
+        }
+        const ctx = validated.modalityContext;
+        const result = await requestPythonCombinationsCoverage({
+          lotteryCode: ctx.lotteryCode,
+          mathModelType: ctx.mathModelType,
+          universeSize: ctx.universeSize,
+          drawnCount: ctx.drawnCount,
+          chosenCount: ctx.chosenCount,
+          minNumbersToChoose: ctx.minNumbersToChoose,
+          maxNumbersToChoose: ctx.maxNumbersToChoose,
+          prizeTiers: ctx.prizeTiers,
+          bets: payload.bets,
+          targetSubsetSize: payload.targetSubsetSize,
+          poolNumbers: payload.poolNumbers,
+        });
+        return res.json({
+          ...result,
+          modalityContext: ctx,
+        });
+      } catch (error) {
+        if (error instanceof ModalityValidationError) {
+          return res.status(error.statusCode).json({ error: error.code, message: error.message });
+        }
+        if (error instanceof MathEngineError) {
+          return res.status(error.statusCode).json({ error: error.code, message: error.message });
+        }
+        console.error('Unexpected error calling Python /combinations/coverage:', error);
+        return res.status(503).json({
+          error: 'MATH_ENGINE_UNAVAILABLE',
+          message: 'Falha de comunicação com o motor matemático Python.',
+        });
+      }
+    }
+  );
+
+  /**
+   * Etapa 3 — Gerador controlado sem duplicatas (/v1/combinations/generate).
+   */
+  router.post(
+    '/python/combinations/generate',
+    validateBody(combinationsGenerateRequestSchema),
+    async (req, res) => {
+      try {
+        const payload = req.body as z.infer<typeof combinationsGenerateRequestSchema>;
+        if (payload.lotteryCode === 'generic-reference' || payload.mode === 'free') {
+          return res.status(400).json({
+            error: 'GENERIC_CODE_NOT_ALLOWED',
+            message:
+              'O gerador controlado opera exclusivamente com modalidades oficiais verificadas.',
+          });
+        }
+        const validated = await resolveAndValidateTheoreticalInput(
+          { ...payload, mode: 'modality' },
+          repository
+        );
+        if (validated.modalityContext.mode !== 'modality') {
+          return res.status(400).json({
+            error: 'MODALITY_REQUIRED',
+            message: 'Requer modalidade oficialmente verificada.',
+          });
+        }
+        const ctx = validated.modalityContext;
+        const result = await requestPythonCombinationsGenerate({
+          lotteryCode: ctx.lotteryCode,
+          mathModelType: ctx.mathModelType,
+          universeSize: ctx.universeSize,
+          drawnCount: ctx.drawnCount,
+          chosenCount: ctx.chosenCount,
+          minNumbersToChoose: ctx.minNumbersToChoose,
+          maxNumbersToChoose: ctx.maxNumbersToChoose,
+          prizeTiers: ctx.prizeTiers,
+          simpleBetPriceCents: ctx.simpleBetPriceCents,
+          priceUpdatedAt: ctx.priceUpdatedAt,
+          priceSource: ctx.priceSource,
+          fixedNumbers: payload.fixedNumbers,
+          excludedNumbers: payload.excludedNumbers,
+          variableNumbers: payload.variableNumbers,
+          desiredGamesCount: payload.desiredGamesCount,
+          method: payload.method,
+          coverageTargetT: payload.coverageTargetT,
+          seed: payload.seed,
+          maxBudgetCents: payload.maxBudgetCents,
+          minEven: payload.minEven,
+          maxEven: payload.maxEven,
+          minSum: payload.minSum,
+          maxSum: payload.maxSum,
+          maxConsecutive: payload.maxConsecutive,
+        });
+        return res.json({
+          ...result,
+          modalityContext: ctx,
+        });
+      } catch (error) {
+        if (error instanceof ModalityValidationError) {
+          return res.status(error.statusCode).json({ error: error.code, message: error.message });
+        }
+        if (error instanceof MathEngineError) {
+          return res.status(error.statusCode).json({ error: error.code, message: error.message });
+        }
+        console.error('Unexpected error calling Python /combinations/generate:', error);
+        return res.status(503).json({
+          error: 'MATH_ENGINE_UNAVAILABLE',
+          message: 'Falha de comunicação com o motor matemático Python.',
+        });
+      }
+    }
+  );
+
+  /**
+   * Etapa 3 — Comparador simultâneo de até 5 estratégias combinatórias (/v1/combinations/compare).
+   */
+  router.post(
+    '/python/combinations/compare',
+    validateBody(combinationsCompareRequestSchema),
+    async (req, res) => {
+      try {
+        const payload = req.body as z.infer<typeof combinationsCompareRequestSchema>;
+        if (payload.lotteryCode === 'generic-reference' || payload.mode === 'free') {
+          return res.status(400).json({
+            error: 'GENERIC_CODE_NOT_ALLOWED',
+            message:
+              'O comparador de estratégias opera exclusivamente com modalidades oficiais verificadas.',
+          });
+        }
+        const validated = await resolveAndValidateTheoreticalInput(
+          {
+            ...payload,
+            chosenCount: payload.strategies[0].chosenCount,
+            mode: 'modality',
+          },
+          repository
+        );
+        if (validated.modalityContext.mode !== 'modality') {
+          return res.status(400).json({
+            error: 'MODALITY_REQUIRED',
+            message: 'Requer modalidade oficialmente verificada.',
+          });
+        }
+        const ctx = validated.modalityContext;
+        for (const strategy of payload.strategies) {
+          if (
+            strategy.chosenCount < ctx.minNumbersToChoose ||
+            strategy.chosenCount > ctx.maxNumbersToChoose
+          ) {
+            return res.status(400).json({
+              error: 'MODALITY_CHOSEN_OUT_OF_RANGE',
+              message: `Estratégia "${strategy.name}": quantidade de dezenas (${strategy.chosenCount}) fora dos limites oficiais [${ctx.minNumbersToChoose}..${ctx.maxNumbersToChoose}].`,
+            });
+          }
+        }
+        const result = await requestPythonCombinationsCompare({
+          lotteryCode: ctx.lotteryCode,
+          mathModelType: ctx.mathModelType,
+          universeSize: ctx.universeSize,
+          drawnCount: ctx.drawnCount,
+          minNumbersToChoose: ctx.minNumbersToChoose,
+          maxNumbersToChoose: ctx.maxNumbersToChoose,
+          prizeTiers: ctx.prizeTiers,
+          simpleBetPriceCents: ctx.simpleBetPriceCents,
+          priceUpdatedAt: ctx.priceUpdatedAt,
+          priceSource: ctx.priceSource,
+          strategies: payload.strategies,
+        });
+        return res.json({
+          ...result,
+          modalityContext: ctx,
+        });
+      } catch (error) {
+        if (error instanceof ModalityValidationError) {
+          return res.status(error.statusCode).json({ error: error.code, message: error.message });
+        }
+        if (error instanceof MathEngineError) {
+          return res.status(error.statusCode).json({ error: error.code, message: error.message });
+        }
+        console.error('Unexpected error calling Python /combinations/compare:', error);
+        return res.status(503).json({
+          error: 'MATH_ENGINE_UNAVAILABLE',
+          message: 'Falha de comunicação com o motor matemático Python.',
+        });
+      }
+    }
+  );
 
   return router;
 }

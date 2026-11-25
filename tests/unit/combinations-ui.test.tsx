@@ -207,9 +207,11 @@ function buildGenerateMockResponse() {
 function installCombinationsFetchMock(options?: {
   withVerifiedRule?: boolean;
   pythonUnavailable?: boolean;
+  heterogeneousCompare?: boolean;
 }) {
   const withVerifiedRule = options?.withVerifiedRule ?? true;
   const pythonUnavailable = options?.pythonUnavailable ?? false;
+  const heterogeneousCompare = options?.heterogeneousCompare ?? false;
 
   vi.stubGlobal(
     'fetch',
@@ -254,6 +256,10 @@ function installCombinationsFetchMock(options?: {
               price_updated_at: '2025-07-10T00:00:00.000Z',
               price_source: 'CAIXA',
               strategies_count: 2,
+              has_heterogeneous_universes: heterogeneousCompare,
+              universe_comparison_notice: heterogeneousCompare
+                ? 'As estratégias usam universos restritos ou subconjuntos t distintos; deltas de cobertura foram omitidos.'
+                : null,
               strategies: [
                 {
                   index: 1,
@@ -262,6 +268,14 @@ function installCombinationsFetchMock(options?: {
                   method: 'uniform_sampling',
                   is_exact_method: false,
                   generation_classification: null,
+                  restrictions: {
+                    fixed_numbers: [],
+                    excluded_numbers: [],
+                    variable_count: 60,
+                    restricted_combinations: '50063860',
+                    pool_size: 60,
+                    pool_numbers: Array.from({ length: 60 }, (_, i) => i + 1),
+                  },
                   bets_count: 10,
                   distinct_bets_count: 10,
                   repeated_bets_count: 0,
@@ -278,6 +292,7 @@ function installCombinationsFetchMock(options?: {
                     coverage_fraction: '185 / 34220',
                     is_full_coverage_proven: false,
                   },
+                  coverage_comparable_with_baseline: true,
                   probabilities: {
                     main_prize_exact: null,
                     exact_any_prize: null,
@@ -297,6 +312,23 @@ function installCombinationsFetchMock(options?: {
                   method: 'coverage_heuristic',
                   is_exact_method: false,
                   generation_classification: null,
+                  restrictions: heterogeneousCompare
+                    ? {
+                        fixed_numbers: [1],
+                        excluded_numbers: [59, 60],
+                        variable_count: 57,
+                        restricted_combinations: '4187106',
+                        pool_size: 58,
+                        pool_numbers: Array.from({ length: 58 }, (_, i) => i + 1),
+                      }
+                    : {
+                        fixed_numbers: [],
+                        excluded_numbers: [],
+                        variable_count: 60,
+                        restricted_combinations: '50063860',
+                        pool_size: 60,
+                        pool_numbers: Array.from({ length: 60 }, (_, i) => i + 1),
+                      },
                   bets_count: 10,
                   distinct_bets_count: 10,
                   repeated_bets_count: 0,
@@ -306,13 +338,14 @@ function installCombinationsFetchMock(options?: {
                   intersections: { min_overlap: 0, max_overlap: 1, avg_overlap: 0.3 },
                   coverage: {
                     target_subset_size: 3,
-                    pool_size: 60,
+                    pool_size: heterogeneousCompare ? 58 : 60,
                     covered_subsets_count: '198',
-                    total_pool_subsets: '34220',
-                    coverage_percentage: 0.5786,
-                    coverage_fraction: '198 / 34220',
+                    total_pool_subsets: heterogeneousCompare ? '30856' : '34220',
+                    coverage_percentage: heterogeneousCompare ? 0.6417 : 0.5786,
+                    coverage_fraction: heterogeneousCompare ? '198 / 30856' : '198 / 34220',
                     is_full_coverage_proven: false,
                   },
+                  coverage_comparable_with_baseline: !heterogeneousCompare,
                   probabilities: {
                     main_prize_exact: null,
                     exact_any_prize: null,
@@ -320,7 +353,7 @@ function installCombinationsFetchMock(options?: {
                   },
                   delta_vs_baseline: {
                     cost_cents: '0',
-                    coverage_percentage_points: 0.038,
+                    coverage_percentage_points: heterogeneousCompare ? null : 0.038,
                     distinct_simple_combinations: '0',
                   },
                   sample_bets: [[7, 8, 9, 10, 11, 12]],
@@ -509,5 +542,64 @@ describe('Unitários UI — Etapa 3: Laboratório de Combinações', () => {
     expect(
       screen.getByText(/Nenhum cálculo foi simulado ou substituído localmente no navegador/i)
     ).toBeInTheDocument();
+  });
+
+  it('bloqueia apostas inválidas na aba Cobertura e estratégias explícitas inválidas ou acima do orçamento no Comparador', async () => {
+    installCombinationsFetchMock({ withVerifiedRule: true });
+    render(<App />);
+
+    const nav = screen.getByRole('navigation', { name: 'Menu principal' });
+    fireEvent.click(within(nav).getByRole('button', { name: 'Laboratório de Combinações' }));
+
+    // Marca 01 como Fixa e 60 como Excluída
+    const btn01 = await screen.findByRole('button', { name: /Dezena 01 \(Livre\)/i });
+    fireEvent.click(btn01);
+    fireEvent.click(screen.getByRole('button', { name: 'Marcar Excluído' }));
+    fireEvent.click(screen.getByRole('button', { name: /Dezena 60 \(Livre\)/i }));
+
+    // Aba Cobertura: informa aposta sem o fixo 01 e contendo excluído 60
+    fireEvent.click(screen.getByRole('tab', { name: /Cobertura & Análise de Conjunto/i }));
+    const covInput = screen.getByLabelText(/Apostas do Conjunto/i);
+    fireEvent.change(covInput, { target: { value: '02 03 04 05 06 60' } });
+
+    expect(screen.getByText(/Conjunto inválido \(1 aposta\(s\) com violação\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/contém dezena\(s\) excluída\(s\): 60/i)).toBeInTheDocument();
+    expect(screen.getByText(/ausência de dezena\(s\) fixa\(s\) obrigatória\(s\): 1/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Calcular Cobertura & Interseções/i })
+    ).toBeDisabled();
+
+    // Aba Comparador: habilita apostas explícitas na Estratégia #1 acima do orçamento (2 jogos = R$ 12,00 > R$ 6,00)
+    fireEvent.click(screen.getByRole('tab', { name: /Comparador de Estratégias/i }));
+    const explicitCheckboxes = screen.getAllByLabelText(/Informar apostas explícitas manualmente/i);
+    fireEvent.click(explicitCheckboxes[0]);
+
+    const budgetInputs = screen.getAllByLabelText(/Orçamento \(R\$\)/i);
+    fireEvent.change(budgetInputs[0], { target: { value: '6' } });
+
+    const expTextarea = screen.getByLabelText(/Apostas explícitas da estratégia 1/i);
+    fireEvent.change(expTextarea, {
+      target: { value: '01 02 03 04 05 06\n01 07 08 09 10 11' },
+    });
+
+    expect(screen.getByText(/excedendo o orçamento/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Comparar Estratégias' })).toBeDisabled();
+  });
+
+  it('sinaliza universos distintos e omite delta enganoso no comparador quando pools diferem', async () => {
+    installCombinationsFetchMock({ withVerifiedRule: true, heterogeneousCompare: true });
+    render(<App />);
+
+    const nav = screen.getByRole('navigation', { name: 'Menu principal' });
+    fireEvent.click(within(nav).getByRole('button', { name: 'Laboratório de Combinações' }));
+    await screen.findByRole('heading', { name: 'Laboratório de Combinações' });
+
+    fireEvent.click(await screen.findByRole('tab', { name: /Comparador de Estratégias/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Comparar Estratégias' }));
+
+    expect(
+      await screen.findByText(/As estratégias usam universos restritos ou subconjuntos t distintos/i)
+    ).toBeInTheDocument();
+    expect(screen.getByText('Universos distintos')).toBeInTheDocument();
   });
 });

@@ -24,7 +24,8 @@ import {
 import {
   formatBigIntPtBr,
   formatBrlFromCents,
-  parseBetsInput,
+  parseNumberListInput,
+  validateBetsClient,
   type CombinationsAnalyzeResponse,
   type CombinationsCompareResponse,
   type CombinationsCoverageResponse,
@@ -49,6 +50,10 @@ interface StrategyDraft {
   coverageTargetT: number;
   maxBudgetBrl: string;
   useCurrentConstraints: boolean;
+  customFixedInput: string;
+  customExcludedInput: string;
+  useExplicitBets: boolean;
+  explicitBetsInput: string;
 }
 
 const METHOD_LABELS: Record<GenerationMethod, string> = {
@@ -57,6 +62,17 @@ const METHOD_LABELS: Record<GenerationMethod, string> = {
   coverage_heuristic: 'Heurística Gulosa de Cobertura',
   combinatorial_search: 'Busca Combinatória com Refinamento',
 };
+
+function combBigIntClient(n: number, k: number): bigint {
+  if (k < 0 || k > n) return 0n;
+  if (k === 0 || k === n) return 1n;
+  const effK = Math.min(k, n - k);
+  let res = 1n;
+  for (let i = 1n; i <= BigInt(effK); i += 1n) {
+    res = (res * (BigInt(n) - i + 1n)) / i;
+  }
+  return res;
+}
 
 function parseBrlToCents(raw: string): number | null {
   const cleaned = raw.trim().replace(/\./g, '').replace(',', '.');
@@ -140,6 +156,10 @@ export const CombinationsLabView: React.FC = () => {
       coverageTargetT: 3,
       maxBudgetBrl: '120',
       useCurrentConstraints: true,
+      customFixedInput: '',
+      customExcludedInput: '',
+      useExplicitBets: false,
+      explicitBetsInput: '',
     },
     {
       id: 's2',
@@ -150,6 +170,10 @@ export const CombinationsLabView: React.FC = () => {
       coverageTargetT: 3,
       maxBudgetBrl: '120',
       useCurrentConstraints: true,
+      customFixedInput: '',
+      customExcludedInput: '',
+      useExplicitBets: false,
+      explicitBetsInput: '',
     },
     {
       id: 's3',
@@ -160,6 +184,10 @@ export const CombinationsLabView: React.FC = () => {
       coverageTargetT: 3,
       maxBudgetBrl: '120',
       useCurrentConstraints: true,
+      customFixedInput: '',
+      customExcludedInput: '',
+      useExplicitBets: false,
+      explicitBetsInput: '',
     },
   ]);
   const [compareState, setCompareState] = useState<{
@@ -305,6 +333,138 @@ export const CombinationsLabView: React.FC = () => {
     return null;
   }, [activeRule, fixedNumbers.length, variableCount, chosenCount]);
 
+  const coverageValidation = useMemo(() => {
+    if (!activeRule || universeSize <= 0) {
+      return { validBets: [] as number[][], errors: [], isEmpty: true };
+    }
+    return validateBetsClient({
+      rawText: betsTextarea,
+      chosenCount,
+      universeSize,
+      fixedNumbers,
+      excludedNumbers,
+    });
+  }, [activeRule, betsTextarea, chosenCount, universeSize, fixedNumbers, excludedNumbers]);
+
+  useEffect(() => {
+    if (
+      coverageState.status === 'success' &&
+      (Boolean(constraintError) || coverageValidation.errors.length > 0)
+    ) {
+      setCoverageState({ status: 'idle' });
+    }
+  }, [constraintError, coverageValidation.errors.length, coverageState.status]);
+
+  const strategyValidations = useMemo(() => {
+    return strategies.map((strat) => {
+      const errors: string[] = [];
+      let stratFixed = fixedNumbers;
+      let stratExcluded = excludedNumbers;
+
+      if (!strat.useCurrentConstraints && universeSize > 0) {
+        const parsedF = parseNumberListInput(strat.customFixedInput, universeSize, 'Fixos');
+        const parsedE = parseNumberListInput(strat.customExcludedInput, universeSize, 'Excluídos');
+        errors.push(...parsedF.errors, ...parsedE.errors);
+        stratFixed = parsedF.numbers;
+        stratExcluded = parsedE.numbers;
+      }
+
+      const excludedSet = new Set(stratExcluded);
+      const conflict = stratFixed.filter((n) => excludedSet.has(n));
+      if (conflict.length > 0) {
+        errors.push(`Conflito entre fixos e excluídos (${conflict.join(', ')}).`);
+      }
+
+      if (stratFixed.length > strat.chosenCount) {
+        errors.push(
+          `Quantidade de fixos (${stratFixed.length}) excede o tamanho da aposta (${strat.chosenCount}).`
+        );
+      }
+
+      const poolSize = Math.max(0, universeSize - stratExcluded.length);
+      const effT = Math.max(1, Math.min(strat.coverageTargetT, drawnCount || 1, strat.chosenCount));
+      if (universeSize > 0 && poolSize < strat.chosenCount) {
+        errors.push(
+          `Pool disponível (${poolSize} dezenas) insuficiente para aposta de ${strat.chosenCount} dezenas.`
+        );
+      }
+      if (universeSize > 0 && poolSize < effT) {
+        errors.push(`Pool disponível (${poolSize}) menor que o alvo de cobertura t=${effT}.`);
+      }
+
+      const budgetTrimmed = strat.maxBudgetBrl.trim();
+      const budgetCents = budgetTrimmed ? parseBrlToCents(strat.maxBudgetBrl) : null;
+      if (budgetTrimmed && budgetCents === null) {
+        errors.push('Orçamento máximo inválido.');
+      }
+
+      const simplePrice = activeRule?.simpleBetPriceCents ?? null;
+      const eqSimple =
+        drawnCount > 0 && strat.chosenCount >= drawnCount
+          ? combBigIntClient(strat.chosenCount, drawnCount)
+          : 0n;
+      const unitCostCents =
+        simplePrice !== null ? eqSimple * BigInt(simplePrice) : null;
+
+      let validExplicitBets: number[][] = [];
+      if (strat.useExplicitBets && universeSize > 0) {
+        const betCheck = validateBetsClient({
+          rawText: strat.explicitBetsInput,
+          chosenCount: strat.chosenCount,
+          universeSize,
+          fixedNumbers: stratFixed,
+          excludedNumbers: stratExcluded,
+        });
+        if (betCheck.isEmpty) {
+          errors.push('Informe ao menos 1 aposta explícita válida.');
+        } else if (betCheck.errors.length > 0) {
+          for (const issue of betCheck.errors.slice(0, 4)) {
+            errors.push(`Aposta #${issue.betIndex}: ${issue.reasons.join('; ')}.`);
+          }
+          if (betCheck.errors.length > 4) {
+            errors.push(`+ ${betCheck.errors.length - 4} aposta(s) com violação adicional.`);
+          }
+        } else {
+          validExplicitBets = betCheck.validBets;
+          if (budgetCents !== null && unitCostCents !== null) {
+            const totalCost = BigInt(validExplicitBets.length) * unitCostCents;
+            if (totalCost > BigInt(budgetCents)) {
+              errors.push(
+                `Apostas explícitas custam ${formatBrlFromCents(totalCost.toString())}, excedendo o orçamento de ${formatBrlFromCents(budgetCents)}.`
+              );
+            }
+          }
+        }
+      } else if (
+        budgetCents !== null &&
+        unitCostCents !== null &&
+        unitCostCents > 0n &&
+        BigInt(budgetCents) < unitCostCents
+      ) {
+        errors.push(
+          `Orçamento (${formatBrlFromCents(budgetCents)}) insuficiente para 1 aposta (${formatBrlFromCents(unitCostCents.toString())}).`
+        );
+      }
+
+      return {
+        id: strat.id,
+        fixedNumbers: stratFixed,
+        excludedNumbers: stratExcluded,
+        budgetCents,
+        validExplicitBets,
+        errors,
+      };
+    });
+  }, [strategies, fixedNumbers, excludedNumbers, universeSize, drawnCount, activeRule]);
+
+  const hasStrategyValidationErrors = strategyValidations.some((v) => v.errors.length > 0);
+
+  useEffect(() => {
+    if (compareState.status === 'success' && hasStrategyValidationErrors) {
+      setCompareState({ status: 'idle' });
+    }
+  }, [hasStrategyValidationErrors, compareState.status]);
+
   function buildTemporalContextPayload() {
     if (!lotteryDetail || !activeRule) return {};
     return {
@@ -448,8 +608,25 @@ export const CombinationsLabView: React.FC = () => {
 
   async function runCoverageAndSetAnalysis(explicitBets?: number[][]) {
     if (!activeRule || !lotteryDetail) return;
-    const parsedBets = explicitBets ?? parseBetsInput(betsTextarea);
-    if (parsedBets.length === 0) {
+    if (constraintError) {
+      setCoverageState({
+        status: 'error',
+        errorCode: 'CONSTRAINT_ERROR',
+        errorMessage: constraintError,
+      });
+      return;
+    }
+
+    const validation = validateBetsClient({
+      rawText: explicitBets ? undefined : betsTextarea,
+      explicitBets,
+      chosenCount,
+      universeSize,
+      fixedNumbers,
+      excludedNumbers,
+    });
+
+    if (validation.isEmpty) {
       setCoverageState({
         status: 'error',
         errorCode: 'EMPTY_BETS',
@@ -458,6 +635,20 @@ export const CombinationsLabView: React.FC = () => {
       return;
     }
 
+    if (validation.errors.length > 0) {
+      const summary = validation.errors
+        .slice(0, 5)
+        .map((e) => `Aposta #${e.betIndex}: ${e.reasons.join('; ')}`)
+        .join(' | ');
+      setCoverageState({
+        status: 'error',
+        errorCode: 'INVALID_BETS',
+        errorMessage: `Conjunto rejeitado sem cálculo de cobertura/probabilidade. ${summary}`,
+      });
+      return;
+    }
+
+    const parsedBets = validation.validBets;
     const activePool = Array.from({ length: universeSize }, (_, i) => i + 1).filter(
       (n) => !excludedNumbers.includes(n)
     );
@@ -474,6 +665,8 @@ export const CombinationsLabView: React.FC = () => {
             chosenCount,
             bets: parsedBets,
             targetSubsetSize: Math.min(coverageTargetT, Math.min(drawnCount, chosenCount)),
+            fixedNumbers,
+            excludedNumbers,
             ...(excludedNumbers.length > 0 && activePool.length >= coverageTargetT
               ? { poolNumbers: activePool }
               : {}),
@@ -528,6 +721,16 @@ export const CombinationsLabView: React.FC = () => {
 
   async function runCompareStrategies() {
     if (!activeRule || !lotteryDetail) return;
+    if (hasStrategyValidationErrors) {
+      setCompareState({
+        status: 'error',
+        errorCode: 'INVALID_STRATEGY',
+        errorMessage:
+          'Corrija as violações de restrições, apostas explícitas ou orçamento nas estratégias antes de comparar.',
+      });
+      return;
+    }
+
     setCompareState({ status: 'loading' });
     try {
       const res = await fetch('/api/math/python/combinations/compare', {
@@ -536,17 +739,22 @@ export const CombinationsLabView: React.FC = () => {
         body: JSON.stringify({
           ...buildTemporalContextPayload(),
           strategies: strategies.map((s, idx) => {
-            const budgetCents = parseBrlToCents(s.maxBudgetBrl);
+            const evalItem = strategyValidations[idx];
             return {
               name: s.name.trim() || `Estratégia ${idx + 1}`,
               chosenCount: s.chosenCount,
-              fixedNumbers: s.useCurrentConstraints ? fixedNumbers : [],
-              excludedNumbers: s.useCurrentConstraints ? excludedNumbers : [],
+              fixedNumbers: evalItem?.fixedNumbers ?? [],
+              excludedNumbers: evalItem?.excludedNumbers ?? [],
               desiredGamesCount: Math.min(300, Math.max(1, s.desiredGamesCount)),
               method: s.method,
               coverageTargetT: Math.min(s.coverageTargetT, drawnCount, s.chosenCount),
               seed: 2026 + idx * 17,
-              ...(budgetCents !== null ? { maxBudgetCents: budgetCents } : {}),
+              ...(evalItem?.budgetCents !== null && evalItem?.budgetCents !== undefined
+                ? { maxBudgetCents: evalItem.budgetCents }
+                : {}),
+              ...(s.useExplicitBets && evalItem?.validExplicitBets.length
+                ? { bets: evalItem.validExplicitBets }
+                : {}),
             };
           }),
         }),
@@ -1490,9 +1698,13 @@ export const CombinationsLabView: React.FC = () => {
                 </div>
                 <button
                   type="button"
-                  disabled={coverageState.status === 'loading'}
+                  disabled={
+                    Boolean(constraintError) ||
+                    coverageValidation.errors.length > 0 ||
+                    coverageState.status === 'loading'
+                  }
                   onClick={() => runCoverageAndSetAnalysis()}
-                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#D4AF37] px-4 py-2 text-xs font-semibold text-[#0A0B0E] transition-colors hover:bg-[#E5C158] disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#D4AF37] px-4 py-2 text-xs font-semibold text-[#0A0B0E] transition-colors hover:bg-[#E5C158] disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   {coverageState.status === 'loading'
                     ? 'Auditando no Python…'
@@ -1539,9 +1751,35 @@ export const CombinationsLabView: React.FC = () => {
                     {excludedNumbers.length > 0
                       ? `Pool ativo P = U \\ E (${universeSize - excludedNumbers.length} dezenas).`
                       : `Pool ativo P = universo completo (1..${universeSize}).`}
+                    {fixedNumbers.length > 0
+                      ? ` Fixos obrigatórios: ${fixedNumbers.map((n) => String(n).padStart(2, '0')).join(', ')}.`
+                      : ''}
                   </p>
                 </div>
               </div>
+
+              {!coverageValidation.isEmpty && coverageValidation.errors.length > 0 && (
+                <div
+                  role="alert"
+                  className="rounded-lg border border-red-500/35 bg-red-950/20 p-3.5 text-xs text-red-200 space-y-1.5"
+                >
+                  <p className="font-display font-semibold text-red-200 flex items-center gap-2">
+                    <ShieldAlert className="h-4 w-4 shrink-0 text-red-400" aria-hidden="true" />
+                    <span>
+                      Conjunto inválido ({coverageValidation.errors.length} aposta(s) com violação) —
+                      cálculo bloqueado
+                    </span>
+                  </p>
+                  <ul className="list-disc pl-5 space-y-0.5 text-red-200/90">
+                    {coverageValidation.errors.slice(0, 6).map((issue) => (
+                      <li key={issue.betIndex}>
+                        <span className="font-mono-tabular font-semibold">Aposta #{issue.betIndex}:</span>{' '}
+                        {issue.reasons.join('; ')}.
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               {coverageState.status === 'error' &&
                 renderPythonErrorBanner(coverageState, () => runCoverageAndSetAnalysis())}
@@ -1705,6 +1943,10 @@ export const CombinationsLabView: React.FC = () => {
                             coverageTargetT: Math.min(3, drawnCount, chosenCount),
                             maxBudgetBrl: maxBudgetBrl || '120',
                             useCurrentConstraints: true,
+                            customFixedInput: '',
+                            customExcludedInput: '',
+                            useExplicitBets: false,
+                            explicitBetsInput: '',
                           },
                         ])
                       }
@@ -1717,9 +1959,9 @@ export const CombinationsLabView: React.FC = () => {
 
                   <button
                     type="button"
-                    disabled={compareState.status === 'loading'}
+                    disabled={hasStrategyValidationErrors || compareState.status === 'loading'}
                     onClick={runCompareStrategies}
-                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#D4AF37] px-4 py-2 text-xs font-semibold text-[#0A0B0E] transition-colors hover:bg-[#E5C158] disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#D4AF37] px-4 py-2 text-xs font-semibold text-[#0A0B0E] transition-colors hover:bg-[#E5C158] disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
                   >
                     {compareState.status === 'loading'
                       ? 'Comparando no Python…'
@@ -1730,158 +1972,268 @@ export const CombinationsLabView: React.FC = () => {
 
               {/* Editor das Estratégias (1..5) */}
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-                {strategies.map((strat, idx) => (
-                  <div
-                    key={strat.id}
-                    className="space-y-2.5 rounded-lg border border-white/8 bg-[#0D0F14] p-4 text-xs"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono-tabular text-[#E5C158] font-medium">
-                        Estratégia #{idx + 1} {idx === 0 ? '(Referência)' : ''}
-                      </span>
-                      {strategies.length > 1 && (
-                        <button
-                          type="button"
-                          aria-label={`Remover estratégia ${strat.name}`}
-                          onClick={() =>
-                            setStrategies((prev) => prev.filter((item) => item.id !== strat.id))
-                          }
-                          className="rounded p-1 text-neutral-400 hover:text-red-300 cursor-pointer"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                    </div>
+                {strategies.map((strat, idx) => {
+                  const stratEval = strategyValidations[idx];
+                  const hasErr = (stratEval?.errors.length ?? 0) > 0;
+                  return (
+                    <div
+                      key={strat.id}
+                      className={`space-y-2.5 rounded-lg border bg-[#0D0F14] p-4 text-xs ${
+                        hasErr ? 'border-red-500/45' : 'border-white/8'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono-tabular text-[#E5C158] font-medium">
+                          Estratégia #{idx + 1} {idx === 0 ? '(Referência)' : ''}
+                        </span>
+                        {strategies.length > 1 && (
+                          <button
+                            type="button"
+                            aria-label={`Remover estratégia ${strat.name}`}
+                            onClick={() =>
+                              setStrategies((prev) => prev.filter((item) => item.id !== strat.id))
+                            }
+                            className="rounded p-1 text-neutral-400 hover:text-red-300 cursor-pointer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
 
-                    <input
-                      type="text"
-                      aria-label={`Nome da estratégia ${idx + 1}`}
-                      value={strat.name}
-                      onChange={(e) =>
-                        setStrategies((prev) =>
-                          prev.map((item) =>
-                            item.id === strat.id ? { ...item, name: e.target.value } : item
-                          )
-                        )
-                      }
-                      className="w-full rounded-md border border-white/12 bg-[#12141A] px-2.5 py-1.5 text-xs text-[#F1F2F4]"
-                    />
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className="block">
-                        <span className="text-[11px] text-neutral-400">Dezenas (m)</span>
-                        <select
-                          value={strat.chosenCount}
-                          onChange={(e) =>
-                            setStrategies((prev) =>
-                              prev.map((item) =>
-                                item.id === strat.id
-                                  ? { ...item, chosenCount: Number(e.target.value) }
-                                  : item
-                              )
-                            )
-                          }
-                          className="mt-0.5 w-full rounded-md border border-white/12 bg-[#12141A] px-2 py-1.5 font-mono-tabular text-xs text-[#F1F2F4]"
-                        >
-                          {Array.from(
-                            { length: Math.max(1, maxChoose - minChoose + 1) },
-                            (_, i) => minChoose + i
-                          ).map((m) => (
-                            <option key={m} value={m}>
-                              {m}d
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-
-                      <label className="block">
-                        <span className="text-[11px] text-neutral-400">Jogos</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={300}
-                          value={strat.desiredGamesCount}
-                          onChange={(e) =>
-                            setStrategies((prev) =>
-                              prev.map((item) =>
-                                item.id === strat.id
-                                  ? {
-                                      ...item,
-                                      desiredGamesCount: Math.max(
-                                        1,
-                                        Math.min(300, Number(e.target.value) || 1)
-                                      ),
-                                    }
-                                  : item
-                              )
-                            )
-                          }
-                          className="mt-0.5 w-full rounded-md border border-white/12 bg-[#12141A] px-2 py-1.5 font-mono-tabular text-xs text-[#F1F2F4]"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className="block">
-                        <span className="text-[11px] text-neutral-400">Método</span>
-                        <select
-                          value={strat.method}
-                          onChange={(e) =>
-                            setStrategies((prev) =>
-                              prev.map((item) =>
-                                item.id === strat.id
-                                  ? { ...item, method: e.target.value as GenerationMethod }
-                                  : item
-                              )
-                            )
-                          }
-                          className="mt-0.5 w-full rounded-md border border-white/12 bg-[#12141A] px-2 py-1.5 text-[11px] text-[#F1F2F4]"
-                        >
-                          <option value="uniform_sampling">Amostragem</option>
-                          <option value="coverage_heuristic">Heurística</option>
-                          <option value="combinatorial_search">Busca 1-opt</option>
-                          <option value="exhaustive">Exaustiva</option>
-                        </select>
-                      </label>
-
-                      <label className="block">
-                        <span className="text-[11px] text-neutral-400">Orçamento (R$)</span>
-                        <input
-                          type="text"
-                          value={strat.maxBudgetBrl}
-                          onChange={(e) =>
-                            setStrategies((prev) =>
-                              prev.map((item) =>
-                                item.id === strat.id
-                                  ? { ...item, maxBudgetBrl: e.target.value }
-                                  : item
-                              )
-                            )
-                          }
-                          className="mt-0.5 w-full rounded-md border border-white/12 bg-[#12141A] px-2 py-1.5 font-mono-tabular text-xs text-[#F1F2F4]"
-                        />
-                      </label>
-                    </div>
-
-                    <label className="flex items-center gap-2 text-[11px] text-neutral-400 cursor-pointer">
                       <input
-                        type="checkbox"
-                        checked={strat.useCurrentConstraints}
+                        type="text"
+                        aria-label={`Nome da estratégia ${idx + 1}`}
+                        value={strat.name}
                         onChange={(e) =>
                           setStrategies((prev) =>
                             prev.map((item) =>
-                              item.id === strat.id
-                                ? { ...item, useCurrentConstraints: e.target.checked }
-                                : item
+                              item.id === strat.id ? { ...item, name: e.target.value } : item
                             )
                           )
                         }
-                        className="rounded border-white/20 bg-[#12141A]"
+                        className="w-full rounded-md border border-white/12 bg-[#12141A] px-2.5 py-1.5 text-xs text-[#F1F2F4]"
                       />
-                      <span>Aplicar fixos/excluídos atuais da grade</span>
-                    </label>
-                  </div>
-                ))}
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="block">
+                          <span className="text-[11px] text-neutral-400">Dezenas (m)</span>
+                          <select
+                            value={strat.chosenCount}
+                            onChange={(e) =>
+                              setStrategies((prev) =>
+                                prev.map((item) =>
+                                  item.id === strat.id
+                                    ? { ...item, chosenCount: Number(e.target.value) }
+                                    : item
+                                )
+                              )
+                            }
+                            className="mt-0.5 w-full rounded-md border border-white/12 bg-[#12141A] px-2 py-1.5 font-mono-tabular text-xs text-[#F1F2F4]"
+                          >
+                            {Array.from(
+                              { length: Math.max(1, maxChoose - minChoose + 1) },
+                              (_, i) => minChoose + i
+                            ).map((m) => (
+                              <option key={m} value={m}>
+                                {m}d
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <label className="block">
+                          <span className="text-[11px] text-neutral-400">Jogos</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={300}
+                            disabled={strat.useExplicitBets}
+                            value={strat.desiredGamesCount}
+                            onChange={(e) =>
+                              setStrategies((prev) =>
+                                prev.map((item) =>
+                                  item.id === strat.id
+                                    ? {
+                                        ...item,
+                                        desiredGamesCount: Math.max(
+                                          1,
+                                          Math.min(300, Number(e.target.value) || 1)
+                                        ),
+                                      }
+                                    : item
+                                )
+                              )
+                            }
+                            className="mt-0.5 w-full rounded-md border border-white/12 bg-[#12141A] px-2 py-1.5 font-mono-tabular text-xs text-[#F1F2F4] disabled:opacity-50"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="block">
+                          <span className="text-[11px] text-neutral-400">Método</span>
+                          <select
+                            disabled={strat.useExplicitBets}
+                            value={strat.method}
+                            onChange={(e) =>
+                              setStrategies((prev) =>
+                                prev.map((item) =>
+                                  item.id === strat.id
+                                    ? { ...item, method: e.target.value as GenerationMethod }
+                                    : item
+                                )
+                              )
+                            }
+                            className="mt-0.5 w-full rounded-md border border-white/12 bg-[#12141A] px-2 py-1.5 text-[11px] text-[#F1F2F4] disabled:opacity-50"
+                          >
+                            <option value="uniform_sampling">Amostragem</option>
+                            <option value="coverage_heuristic">Heurística</option>
+                            <option value="combinatorial_search">Busca 1-opt</option>
+                            <option value="exhaustive">Exaustiva</option>
+                          </select>
+                        </label>
+
+                        <label className="block">
+                          <span className="text-[11px] text-neutral-400">Orçamento (R$)</span>
+                          <input
+                            type="text"
+                            value={strat.maxBudgetBrl}
+                            onChange={(e) =>
+                              setStrategies((prev) =>
+                                prev.map((item) =>
+                                  item.id === strat.id
+                                    ? { ...item, maxBudgetBrl: e.target.value }
+                                    : item
+                                )
+                              )
+                            }
+                            className="mt-0.5 w-full rounded-md border border-white/12 bg-[#12141A] px-2 py-1.5 font-mono-tabular text-xs text-[#F1F2F4]"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="space-y-1.5 border-t border-white/6 pt-2">
+                        <label className="flex items-center gap-2 text-[11px] text-neutral-300 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={strat.useCurrentConstraints}
+                            onChange={(e) =>
+                              setStrategies((prev) =>
+                                prev.map((item) =>
+                                  item.id === strat.id
+                                    ? { ...item, useCurrentConstraints: e.target.checked }
+                                    : item
+                                )
+                              )
+                            }
+                            className="rounded border-white/20 bg-[#12141A]"
+                          />
+                          <span>Usar fixos/excluídos da grade global</span>
+                        </label>
+
+                        {!strat.useCurrentConstraints && (
+                          <div className="grid grid-cols-2 gap-2 pt-1">
+                            <label className="block">
+                              <span className="text-[10px] text-neutral-400">
+                                Fixos próprios
+                              </span>
+                              <input
+                                type="text"
+                                aria-label={`Fixos próprios da estratégia ${idx + 1}`}
+                                placeholder="Ex: 01 02"
+                                value={strat.customFixedInput}
+                                onChange={(e) =>
+                                  setStrategies((prev) =>
+                                    prev.map((item) =>
+                                      item.id === strat.id
+                                        ? { ...item, customFixedInput: e.target.value }
+                                        : item
+                                    )
+                                  )
+                                }
+                                className="mt-0.5 w-full rounded-md border border-white/12 bg-[#12141A] px-2 py-1 font-mono-tabular text-[11px] text-[#F1F2F4]"
+                              />
+                            </label>
+                            <label className="block">
+                              <span className="text-[10px] text-neutral-400">
+                                Excluídos próprios
+                              </span>
+                              <input
+                                type="text"
+                                aria-label={`Excluídos próprios da estratégia ${idx + 1}`}
+                                placeholder="Ex: 59 60"
+                                value={strat.customExcludedInput}
+                                onChange={(e) =>
+                                  setStrategies((prev) =>
+                                    prev.map((item) =>
+                                      item.id === strat.id
+                                        ? { ...item, customExcludedInput: e.target.value }
+                                        : item
+                                    )
+                                  )
+                                }
+                                className="mt-0.5 w-full rounded-md border border-white/12 bg-[#12141A] px-2 py-1 font-mono-tabular text-[11px] text-[#F1F2F4]"
+                              />
+                            </label>
+                          </div>
+                        )}
+
+                        <label className="flex items-center gap-2 text-[11px] text-neutral-300 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={strat.useExplicitBets}
+                            onChange={(e) =>
+                              setStrategies((prev) =>
+                                prev.map((item) =>
+                                  item.id === strat.id
+                                    ? { ...item, useExplicitBets: e.target.checked }
+                                    : item
+                                )
+                              )
+                            }
+                            className="rounded border-white/20 bg-[#12141A]"
+                          />
+                          <span>Informar apostas explícitas manualmente</span>
+                        </label>
+
+                        {strat.useExplicitBets && (
+                          <label className="block pt-1">
+                            <span className="text-[10px] text-neutral-400">
+                              Apostas ({strat.chosenCount} dezenas por linha)
+                            </span>
+                            <textarea
+                              rows={3}
+                              aria-label={`Apostas explícitas da estratégia ${idx + 1}`}
+                              placeholder={`01 02 03 04 05 06`}
+                              value={strat.explicitBetsInput}
+                              onChange={(e) =>
+                                setStrategies((prev) =>
+                                  prev.map((item) =>
+                                    item.id === strat.id
+                                      ? { ...item, explicitBetsInput: e.target.value }
+                                      : item
+                                  )
+                                )
+                              }
+                              className="mt-0.5 w-full rounded-md border border-white/12 bg-[#12141A] p-2 font-mono-tabular text-[11px] text-[#F1F2F4]"
+                            />
+                          </label>
+                        )}
+                      </div>
+
+                      {hasErr && stratEval && (
+                        <div
+                          role="alert"
+                          className="rounded-md border border-red-500/35 bg-red-950/25 px-2.5 py-2 text-[11px] text-red-200 space-y-0.5"
+                        >
+                          {stratEval.errors.map((errMsg, eIdx) => (
+                            <p key={eIdx}>{errMsg}</p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
               {compareState.status === 'error' &&
@@ -1889,13 +2241,32 @@ export const CombinationsLabView: React.FC = () => {
 
               {compareState.status === 'success' && compareState.data && (
                 <div className="space-y-5">
-                  <StrategyComparisonChart strategies={compareState.data.strategies} />
+                  {compareState.data.has_heterogeneous_universes &&
+                    compareState.data.universe_comparison_notice && (
+                      <div
+                        role="status"
+                        className="flex items-start gap-2.5 rounded-lg border border-amber-500/35 bg-amber-950/20 p-3.5 text-xs text-amber-100"
+                      >
+                        <AlertTriangle
+                          className="mt-0.5 h-4 w-4 shrink-0 text-amber-400"
+                          aria-hidden="true"
+                        />
+                        <p className="leading-relaxed">
+                          {compareState.data.universe_comparison_notice}
+                        </p>
+                      </div>
+                    )}
+
+                  <StrategyComparisonChart
+                    strategies={compareState.data.strategies}
+                    hasHeterogeneousUniverses={compareState.data.has_heterogeneous_universes}
+                  />
 
                   <div className="overflow-x-auto rounded-lg border border-white/8 bg-[#0D0F14]">
                     <table className="w-full text-left text-xs">
                       <thead>
                         <tr className="border-b border-white/8 text-neutral-400">
-                          <th className="py-3 px-4 font-medium">Estratégia</th>
+                          <th className="py-3 px-4 font-medium">Estratégia & Universo Ativo</th>
                           <th className="py-3 px-3 font-medium text-right">Jogos</th>
                           <th className="py-3 px-3 font-medium text-right">Custo Total</th>
                           <th className="py-3 px-3 font-medium text-right">Δ Custo</th>
@@ -1908,8 +2279,16 @@ export const CombinationsLabView: React.FC = () => {
                       <tbody className="divide-y divide-white/6 font-mono-tabular">
                         {compareState.data.strategies.map((s) => (
                           <tr key={s.index} className="hover:bg-white/[0.02]">
-                            <td className="py-3 px-4 font-sans text-neutral-200 font-medium">
-                              #{s.index} · {s.name} ({s.chosen_count}d)
+                            <td className="py-3 px-4 font-sans text-neutral-200">
+                              <div className="font-medium">
+                                #{s.index} · {s.name} ({s.chosen_count}d)
+                              </div>
+                              <div className="mt-0.5 font-mono-tabular text-[11px] text-neutral-400">
+                                Pool |P|={s.restrictions.pool_size} · Fixos:{' '}
+                                {s.restrictions.fixed_numbers.length} · Excl:{' '}
+                                {s.restrictions.excluded_numbers.length} · |Ω_restrito|=
+                                {formatBigIntPtBr(s.restrictions.restricted_combinations)}
+                              </div>
                             </td>
                             <td className="py-3 px-3 text-right text-neutral-200">{s.bets_count}</td>
                             <td className="py-3 px-3 text-right text-[#E5C158]">
@@ -1934,9 +2313,10 @@ export const CombinationsLabView: React.FC = () => {
                             <td className="py-3 px-3 text-right text-neutral-300">
                               {s.index === 1
                                 ? 'Base'
-                                : s.delta_vs_baseline.coverage_percentage_points !== null
-                                  ? `${s.delta_vs_baseline.coverage_percentage_points >= 0 ? '+' : ''}${s.delta_vs_baseline.coverage_percentage_points.toFixed(2)} p.p.`
-                                  : '—'}
+                                : !s.coverage_comparable_with_baseline ||
+                                    s.delta_vs_baseline.coverage_percentage_points === null
+                                  ? 'Universos distintos'
+                                  : `${s.delta_vs_baseline.coverage_percentage_points >= 0 ? '+' : ''}${s.delta_vs_baseline.coverage_percentage_points.toFixed(2)} p.p.`}
                             </td>
                             <td className="py-3 px-4 font-sans text-right text-neutral-400">
                               {s.is_exact_method ? 'Exata' : 'Heurística / Amostral'}

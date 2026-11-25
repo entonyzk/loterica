@@ -222,6 +222,8 @@ describe('Unitários — Etapa 3: Bridge Node.js e Auditoria Combinatória (BigI
           drawn_count: 6,
           chosen_count: 6,
           target_subset_size: 2,
+          fixed_numbers: [],
+          excluded_numbers: [],
           pool_size: 6,
           pool_numbers: [1, 2, 3, 4, 5, 6],
           submitted_bets_count: 1,
@@ -319,6 +321,8 @@ describe('Unitários — Etapa 3: Bridge Node.js e Auditoria Combinatória (BigI
             drawn_count: 6,
             chosen_count: 6,
             target_subset_size: 2,
+            fixed_numbers: [1],
+            excluded_numbers: [60],
             pool_size: 59,
             pool_numbers: Array.from({ length: 59 }, (_, i) => i + 1),
             submitted_bets_count: 1,
@@ -421,6 +425,8 @@ describe('Unitários — Etapa 3: Bridge Node.js e Auditoria Combinatória (BigI
           price_updated_at: null,
           price_source: null,
           strategies_count: 2,
+          has_heterogeneous_universes: false,
+          universe_comparison_notice: null,
           strategies: [
             {
               index: 1,
@@ -429,6 +435,14 @@ describe('Unitários — Etapa 3: Bridge Node.js e Auditoria Combinatória (BigI
               method: 'uniform_sampling',
               is_exact_method: false,
               generation_classification: null,
+              restrictions: {
+                fixed_numbers: [],
+                excluded_numbers: [],
+                variable_count: 60,
+                restricted_combinations: c60_6,
+                pool_size: 60,
+                pool_numbers: Array.from({ length: 60 }, (_, i) => i + 1),
+              },
               bets_count: 2,
               distinct_bets_count: 2,
               repeated_bets_count: 0,
@@ -445,6 +459,7 @@ describe('Unitários — Etapa 3: Bridge Node.js e Auditoria Combinatória (BigI
                 coverage_fraction: '1 / 59',
                 is_full_coverage_proven: false,
               },
+              coverage_comparable_with_baseline: true,
               probabilities: {
                 main_prize_exact: null,
                 exact_any_prize: null,
@@ -464,6 +479,14 @@ describe('Unitários — Etapa 3: Bridge Node.js e Auditoria Combinatória (BigI
               method: 'coverage_heuristic',
               is_exact_method: false,
               generation_classification: null,
+              restrictions: {
+                fixed_numbers: [],
+                excluded_numbers: [],
+                variable_count: 60,
+                restricted_combinations: c60_6,
+                pool_size: 60,
+                pool_numbers: Array.from({ length: 60 }, (_, i) => i + 1),
+              },
               bets_count: 3,
               distinct_bets_count: 3,
               repeated_bets_count: 0,
@@ -480,6 +503,7 @@ describe('Unitários — Etapa 3: Bridge Node.js e Auditoria Combinatória (BigI
                 coverage_fraction: '3 / 118',
                 is_full_coverage_proven: false,
               },
+              coverage_comparable_with_baseline: true,
               probabilities: {
                 main_prize_exact: null,
                 exact_any_prize: null,
@@ -489,6 +513,214 @@ describe('Unitários — Etapa 3: Bridge Node.js e Auditoria Combinatória (BigI
                 cost_cents: '999', // adulterado! esperado 600
                 coverage_percentage_points: 0.85,
                 distinct_simple_combinations: '1',
+              },
+              sample_bets: [],
+            },
+          ],
+          axiom_notice: 'ok',
+          execution_source: 'python_fastapi_engine',
+        }
+      )
+    ).toThrow(MathEngineError);
+  });
+
+  it('rejeita cobertura com pool contendo dezena excluída e encaminha fixedNumbers/excludedNumbers na rota', async () => {
+    expect(() =>
+      validatePythonCoverageIntegrity(
+        {
+          lotteryCode: 'mega-sena',
+          universeSize: 60,
+          drawnCount: 6,
+          chosenCount: 6,
+          targetSubsetSize: 2,
+          submittedBetsCount: 1,
+          fixedNumbers: [1],
+          excludedNumbers: [60],
+        },
+        {
+          lottery_code: 'mega-sena',
+          universe_size: 60,
+          drawn_count: 6,
+          chosen_count: 6,
+          target_subset_size: 2,
+          fixed_numbers: [1],
+          excluded_numbers: [60],
+          pool_size: 6,
+          pool_numbers: [1, 2, 3, 4, 5, 60], // 60 é excluída!
+          submitted_bets_count: 1,
+          distinct_bets_count: 1,
+          coverage: {
+            total_pool_subsets: '15',
+            total_universe_subsets: '1770',
+            covered_subsets_count: '15',
+            uncovered_subsets_count: '0',
+            coverage_fraction: '1 / 1',
+            coverage_exact_numerator: '1',
+            coverage_exact_denominator: '1',
+            coverage_percentage: 100,
+            universe_coverage_percentage: 0.85,
+            is_full_coverage_proven: true,
+            enumeration_mode: 'exhaustive',
+          },
+          redundancy: {
+            subsets_per_bet: '15',
+            nominal_subset_appearances: '15',
+            repeated_subset_appearances: '0',
+            multiplicity_histogram: { '1': 15 },
+          },
+          covered_sample: [],
+          uncovered_sample: [],
+          coverage_vs_guarantee_notice: 'ok',
+          execution_source: 'python_fastapi_engine',
+        }
+      )
+    ).toThrow(MathEngineError);
+
+    process.env.MATH_ENGINE_URL = 'http://127.0.0.1:19998';
+    let forwardedBody: { fixed_numbers?: number[]; excluded_numbers?: number[] } = {};
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === 'http://127.0.0.1:19998/v1/combinations/coverage') {
+        forwardedBody = JSON.parse(String(init?.body ?? '{}')) as {
+          fixed_numbers?: number[];
+          excluded_numbers?: number[];
+        };
+        return new Response(
+          JSON.stringify({ detail: 'Aposta #1 contém dezenas excluídas ([60]).' }),
+          { status: 422, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return originalFetch(input, init);
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api/math', createMathRouter(buildMockRepo()));
+
+    const res = await postJson(app, '/api/math/python/combinations/coverage', {
+      lotteryCode: 'mega-sena',
+      chosenCount: 6,
+      bets: [[1, 2, 3, 4, 5, 60]],
+      targetSubsetSize: 2,
+      fixedNumbers: [1],
+      excludedNumbers: [60],
+    });
+    expect(res.status).toBe(422);
+    expect(forwardedBody.fixed_numbers).toEqual([1]);
+    expect(forwardedBody.excluded_numbers).toEqual([60]);
+  });
+
+  it('rejeita delta de cobertura entre universos incompatíveis e estratégia acima do orçamento na auditoria compare', () => {
+    const c60_6 = exactCombinationsBigInt(60, 6).toString();
+    expect(() =>
+      validatePythonCompareIntegrity(
+        {
+          lotteryCode: 'mega-sena',
+          universeSize: 60,
+          drawnCount: 6,
+          strategiesCount: 2,
+          strategies: [
+            { chosenCount: 6, maxBudgetCents: 1200 },
+            { chosenCount: 6, maxBudgetCents: 1200 },
+          ],
+        },
+        {
+          lottery_code: 'mega-sena',
+          universe_size: 60,
+          drawn_count: 6,
+          simple_bet_price_cents: 600,
+          price_updated_at: null,
+          price_source: null,
+          strategies_count: 2,
+          has_heterogeneous_universes: true,
+          universe_comparison_notice: 'ok',
+          strategies: [
+            {
+              index: 1,
+              name: 'S1',
+              chosen_count: 6,
+              method: 'explicit_bets',
+              is_exact_method: true,
+              generation_classification: null,
+              restrictions: {
+                fixed_numbers: [],
+                excluded_numbers: [],
+                variable_count: 60,
+                restricted_combinations: c60_6,
+                pool_size: 60,
+                pool_numbers: Array.from({ length: 60 }, (_, i) => i + 1),
+              },
+              bets_count: 1,
+              distinct_bets_count: 1,
+              repeated_bets_count: 0,
+              total_cost_cents: '600',
+              distinct_simple_combinations: '1',
+              redundant_simple_combinations: '0',
+              intersections: { min_overlap: 0, max_overlap: 0, avg_overlap: 0 },
+              coverage: {
+                target_subset_size: 2,
+                pool_size: 60,
+                covered_subsets_count: '15',
+                total_pool_subsets: '1770',
+                coverage_percentage: 0.85,
+                coverage_fraction: '1 / 118',
+                is_full_coverage_proven: false,
+              },
+              coverage_comparable_with_baseline: true,
+              probabilities: {
+                main_prize_exact: null,
+                exact_any_prize: null,
+                exact_union_status: 'exact_union_computed',
+              },
+              delta_vs_baseline: {
+                cost_cents: '0',
+                coverage_percentage_points: 0,
+                distinct_simple_combinations: '0',
+              },
+              sample_bets: [],
+            },
+            {
+              index: 2,
+              name: 'S2',
+              chosen_count: 6,
+              method: 'explicit_bets',
+              is_exact_method: true,
+              generation_classification: null,
+              restrictions: {
+                fixed_numbers: [1],
+                excluded_numbers: [60],
+                variable_count: 58,
+                restricted_combinations: exactCombinationsBigInt(58, 5).toString(),
+                pool_size: 59,
+                pool_numbers: Array.from({ length: 59 }, (_, i) => i + 1),
+              },
+              bets_count: 1,
+              distinct_bets_count: 1,
+              repeated_bets_count: 0,
+              total_cost_cents: '600',
+              distinct_simple_combinations: '1',
+              redundant_simple_combinations: '0',
+              intersections: { min_overlap: 0, max_overlap: 0, avg_overlap: 0 },
+              coverage: {
+                target_subset_size: 2,
+                pool_size: 59,
+                covered_subsets_count: '15',
+                total_pool_subsets: '1711',
+                coverage_percentage: 0.88,
+                coverage_fraction: '15 / 1711',
+                is_full_coverage_proven: false,
+              },
+              coverage_comparable_with_baseline: false,
+              probabilities: {
+                main_prize_exact: null,
+                exact_any_prize: null,
+                exact_union_status: 'exact_union_computed',
+              },
+              delta_vs_baseline: {
+                cost_cents: '0',
+                coverage_percentage_points: 0.03, // adulterado! devia ser null
+                distinct_simple_combinations: '0',
               },
               sample_bets: [],
             },

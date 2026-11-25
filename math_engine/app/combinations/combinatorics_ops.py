@@ -54,6 +54,13 @@ def validate_and_partition_constraints(
     variable_numbers: Optional[Sequence[int]] = None,
 ) -> Dict[str, Any]:
     """Valida e particiona U={1..N} em Fixos (F), Excluídos (E) e Livres/Variáveis (V)."""
+    for n in fixed_numbers:
+        if isinstance(n, bool) or not isinstance(n, int):
+            raise ValueError("fixed_numbers deve conter exclusivamente inteiros válidos.")
+    for n in excluded_numbers:
+        if isinstance(n, bool) or not isinstance(n, int):
+            raise ValueError("excluded_numbers deve conter exclusivamente inteiros válidos.")
+
     fixed_set = sorted(set(fixed_numbers))
     excluded_set = sorted(set(excluded_numbers))
 
@@ -285,6 +292,7 @@ def analyze_bet_set(
     simple_bet_price_cents: Optional[int] = None,
     price_updated_at: Optional[str] = None,
     price_source: Optional[str] = None,
+    strict_constraints: bool = True,
 ) -> Dict[str, Any]:
     """Analisa exatamente um conjunto de apostas (distintas, repetidas, interseções, redundância e distribuição)."""
     if not bets:
@@ -292,11 +300,15 @@ def analyze_bet_set(
     if len(bets) > 500:
         raise ValueError("Limite de 500 apostas por requisição de análise detalhada.")
 
-    fixed_set = set(fixed_numbers)
-    excluded_set = set(excluded_numbers)
-    overlap_fe = sorted(fixed_set.intersection(excluded_set))
-    if overlap_fe:
-        raise ValueError(f"Conflito entre fixos e excluídos: {overlap_fe}.")
+    part = validate_and_partition_constraints(
+        universe_size=universe_size,
+        drawn_count=drawn_count,
+        chosen_count=chosen_count,
+        fixed_numbers=fixed_numbers,
+        excluded_numbers=excluded_numbers,
+    )
+    fixed_set = set(part["fixed_numbers"])
+    excluded_set = set(part["excluded_numbers"])
 
     normalized_bets: List[Tuple[int, ...]] = []
     constraint_violations: List[Dict[str, Any]] = []
@@ -306,17 +318,28 @@ def analyze_bet_set(
             raise ValueError(
                 f"Aposta #{idx + 1} deve conter exatamente {chosen_count} dezenas (recebidas: {len(raw_bet)})."
             )
+        for n in raw_bet:
+            if isinstance(n, bool) or not isinstance(n, int):
+                raise ValueError(f"Aposta #{idx + 1} contém valor não inteiro.")
+            if n < 1 or n > universe_size:
+                raise ValueError(f"Dezena {n} na aposta #{idx + 1} fora do universo [1..{universe_size}].")
         uniq = sorted(set(raw_bet))
         if len(uniq) != chosen_count:
             raise ValueError(f"Aposta #{idx + 1} contém dezenas repetidas.")
-        for n in uniq:
-            if n < 1 or n > universe_size:
-                raise ValueError(f"Dezena {n} na aposta #{idx + 1} fora do universo [1..{universe_size}].")
 
         bet_set = set(uniq)
         missing_fixed = sorted(fixed_set - bet_set)
         used_excluded = sorted(bet_set.intersection(excluded_set))
         if missing_fixed or used_excluded:
+            if strict_constraints:
+                reasons: List[str] = []
+                if missing_fixed:
+                    reasons.append(f"ausência de dezenas fixas obrigatórias ({missing_fixed})")
+                if used_excluded:
+                    reasons.append(f"uso de dezenas excluídas ({used_excluded})")
+                raise ValueError(
+                    f"Aposta #{idx + 1} rejeitada por violação de restrições: {'; '.join(reasons)}."
+                )
             constraint_violations.append(
                 {
                     "bet_index": idx + 1,
@@ -534,10 +557,19 @@ def compare_strategies(
     baseline_cost: Optional[int] = None
     baseline_cov_pct: Optional[float] = None
     baseline_distinct_simple: Optional[int] = None
+    baseline_pool_key: Optional[frozenset[int]] = None
+    baseline_target_t: Optional[int] = None
+    has_heterogeneous_universes = False
 
     for idx, strat in enumerate(strategies):
-        name = str(strat.get("name") or f"Estratégia {idx + 1}")
-        chosen_count = int(strat["chosen_count"])
+        name = str(strat.get("name") or f"Estratégia {idx + 1}").strip()
+        if not name:
+            name = f"Estratégia {idx + 1}"
+
+        raw_chosen = strat["chosen_count"]
+        if isinstance(raw_chosen, bool) or not isinstance(raw_chosen, int):
+            raise ValueError(f"Estratégia '{name}': chosen_count deve ser inteiro.")
+        chosen_count = raw_chosen
         if chosen_count < min_numbers_to_choose or chosen_count > max_numbers_to_choose:
             raise ValueError(
                 f"Estratégia '{name}': chosen_count={chosen_count} fora dos limites [{min_numbers_to_choose}..{max_numbers_to_choose}]."
@@ -545,35 +577,126 @@ def compare_strategies(
 
         fixed_nums = strat.get("fixed_numbers") or []
         excluded_nums = strat.get("excluded_numbers") or []
-        target_t = int(strat.get("coverage_target_t") or min(3, drawn_count, chosen_count))
+
+        try:
+            part = validate_and_partition_constraints(
+                universe_size=universe_size,
+                drawn_count=drawn_count,
+                chosen_count=chosen_count,
+                fixed_numbers=fixed_nums,
+                excluded_numbers=excluded_nums,
+            )
+        except ValueError as exc:
+            raise ValueError(f"Estratégia '{name}': {exc}") from exc
+
+        raw_t = strat.get("coverage_target_t")
+        if raw_t is None:
+            target_t = min(3, drawn_count, chosen_count)
+        else:
+            if isinstance(raw_t, bool) or not isinstance(raw_t, int):
+                raise ValueError(f"Estratégia '{name}': coverage_target_t deve ser inteiro.")
+            target_t = raw_t
+        max_t = min(drawn_count, chosen_count)
+        if target_t < 1 or target_t > max_t:
+            raise ValueError(
+                f"Estratégia '{name}': coverage_target_t={target_t} fora dos limites [1..{max_t}]."
+            )
+
+        pool_nums = sorted(set(range(1, universe_size + 1)) - set(part["excluded_numbers"]))
+        if len(pool_nums) < target_t:
+            raise ValueError(
+                f"Estratégia '{name}': pool ativo ({len(pool_nums)} dezenas após exclusões) é menor que target_subset_size={target_t}."
+            )
+
+        max_budget_cents = strat.get("max_budget_cents")
+        if max_budget_cents is not None:
+            if isinstance(max_budget_cents, bool) or not isinstance(max_budget_cents, int) or max_budget_cents < 0:
+                raise ValueError(f"Estratégia '{name}': max_budget_cents inválido.")
+
         explicit_bets = strat.get("bets")
         seed = strat.get("seed") if strat.get("seed") is not None else (2026 + idx)
 
-        if explicit_bets is not None and len(explicit_bets) > 0:
-            bets_used = [sorted(b) for b in explicit_bets]
+        if explicit_bets is not None:
+            if len(explicit_bets) == 0:
+                raise ValueError(
+                    f"Estratégia '{name}': lista explícita 'bets' não pode ser vazia."
+                )
+            if len(explicit_bets) > 300:
+                raise ValueError(
+                    f"Estratégia '{name}': limite de 300 apostas explícitas por estratégia."
+                )
+
+            fixed_set = set(part["fixed_numbers"])
+            excluded_set = set(part["excluded_numbers"])
+            validated_explicit: List[List[int]] = []
+            for b_idx, raw_bet in enumerate(explicit_bets):
+                if len(raw_bet) != chosen_count:
+                    raise ValueError(
+                        f"Estratégia '{name}', aposta #{b_idx + 1}: quantidade incorreta de dezenas ({len(raw_bet)} != {chosen_count})."
+                    )
+                for n in raw_bet:
+                    if isinstance(n, bool) or not isinstance(n, int):
+                        raise ValueError(
+                            f"Estratégia '{name}', aposta #{b_idx + 1}: contém valor não inteiro."
+                        )
+                    if n < 1 or n > universe_size:
+                        raise ValueError(
+                            f"Estratégia '{name}', aposta #{b_idx + 1}: dezena {n} fora do universo [1..{universe_size}]."
+                        )
+                uniq = sorted(set(raw_bet))
+                if len(uniq) != chosen_count:
+                    raise ValueError(
+                        f"Estratégia '{name}', aposta #{b_idx + 1}: contém dezenas repetidas."
+                    )
+                bet_set = set(uniq)
+                missing_fixed = sorted(fixed_set - bet_set)
+                if missing_fixed:
+                    raise ValueError(
+                        f"Estratégia '{name}', aposta #{b_idx + 1}: não contém os números fixos obrigatórios ({missing_fixed})."
+                    )
+                used_excluded = sorted(bet_set.intersection(excluded_set))
+                if used_excluded:
+                    raise ValueError(
+                        f"Estratégia '{name}', aposta #{b_idx + 1}: contém números excluídos ({used_excluded})."
+                    )
+                validated_explicit.append(uniq)
+
+            if max_budget_cents is not None and simple_bet_price_cents is not None:
+                eq_simple_per_bet = comb(chosen_count, drawn_count) if chosen_count >= drawn_count else 0
+                unit_cost_cents = eq_simple_per_bet * simple_bet_price_cents
+                explicit_total_cost = len(validated_explicit) * unit_cost_cents
+                if explicit_total_cost > max_budget_cents:
+                    raise ValueError(
+                        f"Estratégia '{name}': apostas explícitas totalizam {explicit_total_cost} centavos, "
+                        f"excedendo o orçamento máximo informado ({max_budget_cents} centavos)."
+                    )
+
+            bets_used = validated_explicit
             method_used = "explicit_bets"
             is_exact_method = True
             generation_summary = None
         else:
             desired = int(strat.get("desired_games_count") or 5)
             method_used = str(strat.get("method") or "coverage_heuristic")
-            max_budget_cents = strat.get("max_budget_cents")
-            gen_res = generate_controlled_bets(
-                lottery_code=lottery_code,
-                universe_size=universe_size,
-                drawn_count=drawn_count,
-                chosen_count=chosen_count,
-                fixed_numbers=fixed_nums,
-                excluded_numbers=excluded_nums,
-                desired_games_count=desired,
-                method=method_used,
-                coverage_target_t=target_t,
-                seed=seed,
-                max_budget_cents=max_budget_cents,
-                simple_bet_price_cents=simple_bet_price_cents,
-                price_updated_at=price_updated_at,
-                price_source=price_source,
-            )
+            try:
+                gen_res = generate_controlled_bets(
+                    lottery_code=lottery_code,
+                    universe_size=universe_size,
+                    drawn_count=drawn_count,
+                    chosen_count=chosen_count,
+                    fixed_numbers=part["fixed_numbers"],
+                    excluded_numbers=part["excluded_numbers"],
+                    desired_games_count=desired,
+                    method=method_used,
+                    coverage_target_t=target_t,
+                    seed=seed,
+                    max_budget_cents=max_budget_cents,
+                    simple_bet_price_cents=simple_bet_price_cents,
+                    price_updated_at=price_updated_at,
+                    price_source=price_source,
+                )
+            except ValueError as exc:
+                raise ValueError(f"Estratégia '{name}': {exc}") from exc
             bets_used = gen_res["generated_bets"]
             is_exact_method = gen_res["method_classification"]["is_exact_solution"]
             generation_summary = gen_res["method_classification"]
@@ -584,17 +707,14 @@ def compare_strategies(
             drawn_count=drawn_count,
             chosen_count=chosen_count,
             bets=bets_used,
-            fixed_numbers=fixed_nums,
-            excluded_numbers=excluded_nums,
+            fixed_numbers=part["fixed_numbers"],
+            excluded_numbers=part["excluded_numbers"],
             simple_bet_price_cents=simple_bet_price_cents,
             price_updated_at=price_updated_at,
             price_source=price_source,
+            strict_constraints=True,
         )
 
-        # Pool para cobertura: se houver excluídos, P = U \ E; senão U completo
-        pool_nums = sorted(set(range(1, universe_size + 1)) - set(excluded_nums))
-        if not pool_nums or len(pool_nums) < target_t:
-            pool_nums = list(range(1, universe_size + 1))
         cov_analysis = analyze_subset_coverage(
             lottery_code=lottery_code,
             universe_size=universe_size,
@@ -603,9 +723,11 @@ def compare_strategies(
             bets=bets_used,
             target_subset_size=target_t,
             pool_numbers=pool_nums,
+            fixed_numbers=part["fixed_numbers"],
+            excluded_numbers=part["excluded_numbers"],
         )
 
-        # Probabilidade exata de qualquer premiação quando as apostas são simples e <= 12 distintas
+        # Probabilidade exata de qualquer premiação apenas após validação integral da estratégia
         exact_any_prize: Optional[Dict[str, Any]] = None
         exact_union_status = "not_computed_for_large_or_multiple_set"
         if chosen_count == drawn_count and 1 <= set_analysis["counts"]["distinct_bets_count"] <= 12 and prize_tiers:
@@ -619,8 +741,8 @@ def compare_strategies(
             exact_any_prize = union_res["any_prize_union"]
             exact_union_status = "exact_union_computed"
         elif chosen_count > drawn_count and set_analysis["counts"]["distinct_bets_count"] == 1 and prize_tiers:
-            # 1 volante múltiplo: podemos usar distribuição hipergeométrica exata
             from ..models.hypergeometric import HypergeometricLotteryModel
+
             spec_single = HypergeometricLotteryModel().compute_specialized(
                 lottery_code=lottery_code,
                 universe_size=universe_size,
@@ -656,11 +778,20 @@ def compare_strategies(
             if set_analysis["redundancy"]["distinct_simple_combinations"] is not None
             else None
         )
+        pool_key = frozenset(pool_nums)
 
         if idx == 0:
             baseline_cost = total_cost_int
             baseline_cov_pct = cov_pct
             baseline_distinct_simple = distinct_simple_int
+            baseline_pool_key = pool_key
+            baseline_target_t = target_t
+
+        is_coverage_comparable = (
+            pool_key == baseline_pool_key and target_t == baseline_target_t
+        )
+        if not is_coverage_comparable:
+            has_heterogeneous_universes = True
 
         delta_cost = (
             total_cost_int - baseline_cost
@@ -669,7 +800,7 @@ def compare_strategies(
         )
         delta_cov_pct = (
             round(cov_pct - baseline_cov_pct, 6)
-            if baseline_cov_pct is not None
+            if is_coverage_comparable and baseline_cov_pct is not None
             else None
         )
         delta_distinct_simple = (
@@ -677,6 +808,8 @@ def compare_strategies(
             if distinct_simple_int is not None and baseline_distinct_simple is not None
             else None
         )
+
+        restricted_comb_count = comb(part["variable_count"], part["remaining_slots"])
 
         evaluated.append(
             {
@@ -686,6 +819,14 @@ def compare_strategies(
                 "method": method_used,
                 "is_exact_method": is_exact_method,
                 "generation_classification": generation_summary,
+                "restrictions": {
+                    "fixed_numbers": part["fixed_numbers"],
+                    "excluded_numbers": part["explicit_excluded_numbers"],
+                    "variable_count": part["variable_count"],
+                    "restricted_combinations": str(restricted_comb_count),
+                    "pool_size": len(pool_nums),
+                    "pool_numbers": pool_nums,
+                },
                 "bets_count": set_analysis["counts"]["submitted_bets_count"],
                 "distinct_bets_count": set_analysis["counts"]["distinct_bets_count"],
                 "repeated_bets_count": set_analysis["counts"]["repeated_bets_count"],
@@ -706,6 +847,7 @@ def compare_strategies(
                     "coverage_fraction": cov_analysis["coverage"]["coverage_fraction"],
                     "is_full_coverage_proven": cov_analysis["coverage"]["is_full_coverage_proven"],
                 },
+                "coverage_comparable_with_baseline": is_coverage_comparable,
                 "probabilities": {
                     "main_prize_exact": set_analysis["redundancy"]["main_prize_exact"],
                     "exact_any_prize": exact_any_prize,
@@ -722,6 +864,14 @@ def compare_strategies(
             }
         )
 
+    universe_notice = (
+        "As estratégias comparadas utilizam conjuntos de restrições, pools ativos P = U \\ E ou tamanhos t distintos. "
+        "Para evitar comparações enganosas, o percentual de cobertura refere-se exclusivamente ao pool ativo de cada estratégia "
+        "e a diferença em pontos percentuais (Δ Cobertura) é omitida quando os universos divergem da Estratégia #1."
+        if has_heterogeneous_universes
+        else None
+    )
+
     return {
         "lottery_code": lottery_code,
         "universe_size": universe_size,
@@ -730,6 +880,8 @@ def compare_strategies(
         "price_updated_at": price_updated_at,
         "price_source": price_source,
         "strategies_count": len(evaluated),
+        "has_heterogeneous_universes": has_heterogeneous_universes,
+        "universe_comparison_notice": universe_notice,
         "strategies": evaluated,
         "axiom_notice": NO_PREDICTION_NOTICE,
         "execution_source": "python_fastapi_engine",

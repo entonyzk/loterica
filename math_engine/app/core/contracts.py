@@ -223,6 +223,8 @@ class CombinationsCoverageRequest(BaseModel):
     bets: List[List[StrictInt]] = Field(..., min_length=1, max_length=500)
     target_subset_size: StrictInt = Field(..., ge=1, le=100)
     pool_numbers: Optional[List[StrictInt]] = None
+    fixed_numbers: List[StrictInt] = Field(default_factory=list)
+    excluded_numbers: List[StrictInt] = Field(default_factory=list)
 
 
 class CombinationsGenerateRequest(BaseModel):

@@ -704,8 +704,356 @@ def test_etapa3_compare_strategies_and_fastapi_endpoints():
     assert resp.status_code == 200
     body = resp.json()
     assert body["strategies_count"] == 2
+    assert body["has_heterogeneous_universes"] is False
     assert body["strategies"][0]["total_cost_cents"] == "3000"
+    assert body["strategies"][0]["restrictions"]["pool_size"] == 60
+    assert body["strategies"][1]["coverage_comparable_with_baseline"] is True
     assert body["strategies"][1]["delta_vs_baseline"]["cost_cents"] == "0"
     assert body["strategies"][0]["probabilities"]["exact_union_status"] == "exact_union_computed"
+
+
+MEGA_TIERS_REF = [
+    {"hits": 6, "tier_name": "Sena", "tier_order": 1, "is_main_prize": True},
+    {"hits": 5, "tier_name": "Quina", "tier_order": 2, "is_main_prize": False},
+    {"hits": 4, "tier_name": "Quadra", "tier_order": 3, "is_main_prize": False},
+]
+
+
+def test_etapa3_audit_01_rejects_bet_with_excluded_number():
+    from app.combinations import analyze_bet_set
+
+    with pytest.raises(ValueError, match="excluídas"):
+        analyze_bet_set(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            chosen_count=6,
+            bets=[[1, 2, 3, 4, 5, 60]],
+            fixed_numbers=[1],
+            excluded_numbers=[60],
+        )
+
+
+def test_etapa3_audit_02_rejects_bet_missing_required_fixed_number():
+    from app.combinations import analyze_bet_set
+
+    with pytest.raises(ValueError, match="fixas obrigatórias"):
+        analyze_bet_set(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            chosen_count=6,
+            bets=[[2, 3, 4, 5, 6, 7]],
+            fixed_numbers=[1],
+            excluded_numbers=[60],
+        )
+
+
+def test_etapa3_audit_03_rejects_bet_with_repeated_numbers():
+    from app.combinations import analyze_bet_set, analyze_subset_coverage
+
+    with pytest.raises(ValueError, match="repetidas"):
+        analyze_bet_set(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            chosen_count=6,
+            bets=[[1, 2, 3, 4, 5, 5]],
+        )
+
+    with pytest.raises(ValueError, match="repetidas"):
+        analyze_subset_coverage(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            chosen_count=6,
+            bets=[[1, 2, 3, 4, 5, 5]],
+            target_subset_size=2,
+        )
+
+
+def test_etapa3_audit_04_rejects_bet_with_number_out_of_universe():
+    from app.combinations import analyze_bet_set, analyze_subset_coverage
+
+    with pytest.raises(ValueError, match="fora do universo"):
+        analyze_bet_set(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            chosen_count=6,
+            bets=[[1, 2, 3, 4, 5, 61]],
+        )
+
+    with pytest.raises(ValueError, match="fora do universo"):
+        analyze_subset_coverage(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            chosen_count=6,
+            bets=[[0, 2, 3, 4, 5, 6]],
+            target_subset_size=2,
+        )
+
+
+def test_etapa3_audit_05_rejects_bet_with_wrong_number_count():
+    from app.combinations import analyze_bet_set, analyze_subset_coverage
+
+    with pytest.raises(ValueError, match="exatamente 6 dezenas"):
+        analyze_bet_set(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            chosen_count=6,
+            bets=[[1, 2, 3, 4, 5]],
+        )
+
+    with pytest.raises(ValueError, match="exatamente 6 dezenas"):
+        analyze_subset_coverage(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            chosen_count=6,
+            bets=[[1, 2, 3, 4, 5, 6, 7]],
+            target_subset_size=2,
+        )
+
+
+def test_etapa3_audit_06_coverage_rejects_invalid_and_incompatible_bets():
+    from app.combinations import analyze_subset_coverage
+
+    # Não deve ignorar silenciosamente número excluído presente na aposta
+    with pytest.raises(ValueError, match="excluídas"):
+        analyze_subset_coverage(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            chosen_count=6,
+            bets=[[1, 2, 3, 4, 5, 60]],
+            target_subset_size=2,
+            fixed_numbers=[1],
+            excluded_numbers=[60],
+        )
+
+    # Deve rejeitar aposta sem fixo obrigatório
+    with pytest.raises(ValueError, match="fixas obrigatórias"):
+        analyze_subset_coverage(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            chosen_count=6,
+            bets=[[2, 3, 4, 5, 6, 7]],
+            target_subset_size=2,
+            fixed_numbers=[1],
+            excluded_numbers=[],
+        )
+
+
+def test_etapa3_audit_07_comparator_rejects_invalid_strategy():
+    from app.combinations import compare_strategies
+
+    # Estratégia explícita violando número excluído
+    with pytest.raises(ValueError, match="excluídos"):
+        compare_strategies(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            min_numbers_to_choose=6,
+            max_numbers_to_choose=20,
+            prize_tiers=MEGA_TIERS_REF,
+            simple_bet_price_cents=600,
+            price_updated_at=None,
+            price_source=None,
+            strategies=[
+                {
+                    "name": "Explícita Inválida",
+                    "chosen_count": 6,
+                    "fixed_numbers": [1],
+                    "excluded_numbers": [60],
+                    "coverage_target_t": 2,
+                    "bets": [[1, 2, 3, 4, 5, 60]],
+                }
+            ],
+        )
+
+    # Estratégia explícita sem número fixo
+    with pytest.raises(ValueError, match="fixos obrigatórios"):
+        compare_strategies(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            min_numbers_to_choose=6,
+            max_numbers_to_choose=20,
+            prize_tiers=MEGA_TIERS_REF,
+            simple_bet_price_cents=600,
+            price_updated_at=None,
+            price_source=None,
+            strategies=[
+                {
+                    "name": "Sem Fixo",
+                    "chosen_count": 6,
+                    "fixed_numbers": [1, 2],
+                    "excluded_numbers": [],
+                    "coverage_target_t": 2,
+                    "bets": [[3, 4, 5, 6, 7, 8]],
+                }
+            ],
+        )
+
+
+def test_etapa3_audit_08_comparator_rejects_explicit_strategy_over_budget():
+    from app.combinations import compare_strategies
+
+    # 2 apostas simples na Mega-Sena = 1200 centavos, teto = 600 centavos -> rejeição obrigatória
+    with pytest.raises(ValueError, match="orçamento máximo"):
+        compare_strategies(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            min_numbers_to_choose=6,
+            max_numbers_to_choose=20,
+            prize_tiers=MEGA_TIERS_REF,
+            simple_bet_price_cents=600,
+            price_updated_at=None,
+            price_source=None,
+            strategies=[
+                {
+                    "name": "Explícita Acima do Orçamento",
+                    "chosen_count": 6,
+                    "fixed_numbers": [1],
+                    "excluded_numbers": [60],
+                    "coverage_target_t": 2,
+                    "max_budget_cents": 600,
+                    "bets": [
+                        [1, 2, 3, 4, 5, 6],
+                        [1, 7, 8, 9, 10, 11],
+                    ],
+                }
+            ],
+        )
+
+
+def test_etapa3_audit_09_comparator_handles_heterogeneous_restriction_universes():
+    from app.combinations import compare_strategies
+
+    res = compare_strategies(
+        lottery_code="mega-sena",
+        universe_size=60,
+        drawn_count=6,
+        min_numbers_to_choose=6,
+        max_numbers_to_choose=20,
+        prize_tiers=MEGA_TIERS_REF,
+        simple_bet_price_cents=600,
+        price_updated_at=None,
+        price_source=None,
+        strategies=[
+            {
+                "name": "Universo Completo",
+                "chosen_count": 6,
+                "fixed_numbers": [],
+                "excluded_numbers": [],
+                "desired_games_count": 4,
+                "method": "uniform_sampling",
+                "coverage_target_t": 2,
+                "seed": 10,
+            },
+            {
+                "name": "Universo Restrito",
+                "chosen_count": 6,
+                "fixed_numbers": [1],
+                "excluded_numbers": list(range(41, 61)),
+                "desired_games_count": 4,
+                "method": "coverage_heuristic",
+                "coverage_target_t": 2,
+                "seed": 10,
+            },
+        ],
+    )
+    assert res["has_heterogeneous_universes"] is True
+    assert res["universe_comparison_notice"] is not None
+    assert res["strategies"][0]["restrictions"]["pool_size"] == 60
+    assert res["strategies"][1]["restrictions"]["pool_size"] == 40
+    assert res["strategies"][0]["coverage_comparable_with_baseline"] is True
+    assert res["strategies"][1]["coverage_comparable_with_baseline"] is False
+    # Delta de cobertura em p.p. não deve ser computado de forma enganosa entre pools distintos
+    assert res["strategies"][1]["delta_vs_baseline"]["coverage_percentage_points"] is None
+
+
+def test_etapa3_audit_10_invalid_inputs_rejected_without_probability_computation(monkeypatch):
+    from app.combinations import combinatorics_ops
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("Cálculo de probabilidade não deveria ser executado para entrada inválida!")
+
+    monkeypatch.setattr(combinatorics_ops, "_compute_exact_union_for_simple_bets", fail_if_called)
+
+    # 1) Comparador inválido nunca alcança _compute_exact_union_for_simple_bets
+    with pytest.raises(ValueError):
+        combinatorics_ops.compare_strategies(
+            lottery_code="mega-sena",
+            universe_size=60,
+            drawn_count=6,
+            min_numbers_to_choose=6,
+            max_numbers_to_choose=20,
+            prize_tiers=MEGA_TIERS_REF,
+            simple_bet_price_cents=600,
+            price_updated_at=None,
+            price_source=None,
+            strategies=[
+                {
+                    "name": "Inválida",
+                    "chosen_count": 6,
+                    "fixed_numbers": [1],
+                    "excluded_numbers": [60],
+                    "bets": [[2, 3, 4, 5, 6, 60]],
+                }
+            ],
+        )
+
+    # 2) Endpoint FastAPI retorna 422 sem chaves de probabilidade ou cobertura válidas
+    fastapi_testclient = pytest.importorskip("fastapi.testclient")
+    from app.main import app
+
+    client = fastapi_testclient.TestClient(app)
+    cov_bad = client.post(
+        "/v1/combinations/coverage",
+        json={
+            "lottery_code": "mega-sena",
+            "math_model_type": "hypergeometric_single_group",
+            "universe_size": 60,
+            "drawn_count": 6,
+            "chosen_count": 6,
+            "bets": [[1, 2, 3, 4, 5, 60]],
+            "target_subset_size": 2,
+            "fixed_numbers": [1],
+            "excluded_numbers": [60],
+        },
+    )
+    assert cov_bad.status_code == 422
+    assert "coverage" not in cov_bad.json()
+
+    cmp_bad = client.post(
+        "/v1/combinations/compare",
+        json={
+            "lottery_code": "mega-sena",
+            "math_model_type": "hypergeometric_single_group",
+            "universe_size": 60,
+            "drawn_count": 6,
+            "min_numbers_to_choose": 6,
+            "max_numbers_to_choose": 20,
+            "prize_tiers": MEGA_TIERS_REF,
+            "simple_bet_price_cents": 600,
+            "strategies": [
+                {
+                    "name": "Explícita acima do teto",
+                    "chosen_count": 6,
+                    "max_budget_cents": 600,
+                    "bets": [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]],
+                }
+            ],
+        },
+    )
+    assert cmp_bad.status_code == 422
+    assert "strategies" not in cmp_bad.json()
+
 
 

@@ -239,6 +239,8 @@ def combinations_coverage_endpoint(payload: CombinationsCoverageRequest):
             bets=payload.bets,
             target_subset_size=payload.target_subset_size,
             pool_numbers=payload.pool_numbers,
+            fixed_numbers=payload.fixed_numbers,
+            excluded_numbers=payload.excluded_numbers,
         )
     except UnregisteredLotteryError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

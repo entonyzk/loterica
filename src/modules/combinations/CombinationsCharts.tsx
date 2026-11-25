@@ -3,7 +3,8 @@ import { formatBrlFromCents, type StrategyEvaluatedItem } from './types';
 
 export const StrategyComparisonChart: React.FC<{
   strategies: StrategyEvaluatedItem[];
-}> = ({ strategies }) => {
+  hasHeterogeneousUniverses?: boolean;
+}> = ({ strategies, hasHeterogeneousUniverses = false }) => {
   if (strategies.length === 0) return null;
 
   const maxCost = Math.max(
@@ -13,11 +14,11 @@ export const StrategyComparisonChart: React.FC<{
   const maxCov = Math.max(...strategies.map((s) => s.coverage.coverage_percentage), 1);
 
   const width = 640;
-  const height = 220;
+  const height = 232;
   const padLeft = 44;
   const padRight = 24;
   const padTop = 26;
-  const padBottom = 48;
+  const padBottom = 58;
   const chartW = width - padLeft - padRight;
   const chartH = height - padTop - padBottom;
   const slotW = chartW / strategies.length;
@@ -26,9 +27,17 @@ export const StrategyComparisonChart: React.FC<{
   return (
     <div className="rounded-xl border border-white/8 bg-[#0D0F14] p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 className="font-display text-xs font-semibold text-[#F1F2F4]">
-          Cobertura de Subconjuntos vs. Custo por Estratégia
-        </h4>
+        <div>
+          <h4 className="font-display text-xs font-semibold text-[#F1F2F4]">
+            Cobertura de Subconjuntos vs. Custo por Estratégia
+          </h4>
+          {hasHeterogeneousUniverses && (
+            <p className="mt-0.5 text-[11px] text-amber-300/90">
+              Universos ativos distintos: cada barra percentual mede a cobertura apenas sobre o
+              respectivo pool P = U \ E da estratégia.
+            </p>
+          )}
+        </div>
         <div className="flex items-center gap-4 text-[11px] text-neutral-400">
           <span className="inline-flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-xs bg-[#D4AF37]" aria-hidden="true" />
@@ -127,7 +136,7 @@ export const StrategyComparisonChart: React.FC<{
 
                 <text
                   x={centerX}
-                  y={padTop + chartH + 16}
+                  y={padTop + chartH + 15}
                   textAnchor="middle"
                   className="fill-neutral-300 text-[10px]"
                 >
@@ -135,12 +144,12 @@ export const StrategyComparisonChart: React.FC<{
                 </text>
                 <text
                   x={centerX}
-                  y={padTop + chartH + 30}
+                  y={padTop + chartH + 28}
                   textAnchor="middle"
                   className="fill-neutral-500 text-[9px]"
                   style={{ fontFamily: 'var(--font-mono)' }}
                 >
-                  {strat.bets_count}×{strat.chosen_count}d
+                  {strat.bets_count}×{strat.chosen_count}d · P={strat.coverage.pool_size}
                 </text>
               </g>
             );

@@ -178,6 +178,8 @@ export const pythonCoverageResponseSchema = z.object({
   drawn_count: z.number().int().min(1).max(1000),
   chosen_count: z.number().int().min(1).max(1000),
   target_subset_size: z.number().int().min(1).max(100),
+  fixed_numbers: z.array(z.number().int()).default([]),
+  excluded_numbers: z.array(z.number().int()).default([]),
   pool_size: z.number().int().min(1),
   pool_numbers: z.array(z.number().int()),
   submitted_bets_count: z.number().int().min(1),
@@ -270,6 +272,14 @@ const strategyEvaluatedSchema = z.object({
       disclaimer: z.string(),
     })
     .nullable(),
+  restrictions: z.object({
+    fixed_numbers: z.array(z.number().int()),
+    excluded_numbers: z.array(z.number().int()),
+    variable_count: z.number().int().min(0),
+    restricted_combinations: integerStringSchema,
+    pool_size: z.number().int().min(1),
+    pool_numbers: z.array(z.number().int()),
+  }),
   bets_count: z.number().int().min(1),
   distinct_bets_count: z.number().int().min(1),
   repeated_bets_count: z.number().int().min(0),
@@ -290,6 +300,7 @@ const strategyEvaluatedSchema = z.object({
     coverage_fraction: z.string(),
     is_full_coverage_proven: z.boolean(),
   }),
+  coverage_comparable_with_baseline: z.boolean(),
   probabilities: z.object({
     main_prize_exact: z
       .object({
@@ -332,6 +343,8 @@ export const pythonCompareResponseSchema = z.object({
   price_updated_at: z.string().nullable(),
   price_source: z.string().nullable(),
   strategies_count: z.number().int().min(1).max(5),
+  has_heterogeneous_universes: z.boolean(),
+  universe_comparison_notice: z.string().nullable(),
   strategies: z.array(strategyEvaluatedSchema).min(1).max(5),
   axiom_notice: z.string(),
   execution_source: z.literal('python_fastapi_engine'),
@@ -486,6 +499,8 @@ export function validatePythonCoverageIntegrity(
     chosenCount: number;
     targetSubsetSize: number;
     submittedBetsCount: number;
+    fixedNumbers?: number[];
+    excludedNumbers?: number[];
   },
   data: PythonCoverageResponse
 ): void {
@@ -502,6 +517,30 @@ export function validatePythonCoverageIntegrity(
       502,
       'Parâmetros ecoados pelo motor Python em /combinations/coverage divergem.'
     );
+  }
+
+  const poolSet = new Set(data.pool_numbers);
+  if (params.fixedNumbers) {
+    for (const f of params.fixedNumbers) {
+      if (!poolSet.has(f)) {
+        throw new MathEngineError(
+          'MATH_ENGINE_INTEGRITY_ERROR',
+          502,
+          `Dezena fixa obrigatória (${f}) ausente no pool de cobertura.`
+        );
+      }
+    }
+  }
+  if (params.excludedNumbers) {
+    for (const e of params.excludedNumbers) {
+      if (poolSet.has(e)) {
+        throw new MathEngineError(
+          'MATH_ENGINE_INTEGRITY_ERROR',
+          502,
+          `Dezena excluída (${e}) encontrada indevidamente no pool de cobertura.`
+        );
+      }
+    }
   }
 
   const expectedPoolSubsets = exactCombinationsBigInt(
@@ -673,6 +712,7 @@ export function validatePythonCompareIntegrity(
     universeSize: number;
     drawnCount: number;
     strategiesCount: number;
+    strategies?: Array<{ maxBudgetCents?: number | null; chosenCount: number }>;
   },
   data: PythonCompareResponse
 ): void {
@@ -691,12 +731,44 @@ export function validatePythonCompareIntegrity(
   }
 
   const base = data.strategies[0];
-  for (const s of data.strategies) {
+  for (let i = 0; i < data.strategies.length; i += 1) {
+    const s = data.strategies[i];
+    const reqStrat = params.strategies?.[i];
+
     if (s.distinct_bets_count + s.repeated_bets_count !== s.bets_count) {
       throw new MathEngineError(
         'MATH_ENGINE_INTEGRITY_ERROR',
         502,
         `Contagem inconsistente de apostas na estratégia "${s.name}".`
+      );
+    }
+    if (s.restrictions.pool_size !== s.coverage.pool_size) {
+      throw new MathEngineError(
+        'MATH_ENGINE_INTEGRITY_ERROR',
+        502,
+        `Tamanho do pool divergente entre restrições e cobertura na estratégia "${s.name}".`
+      );
+    }
+    if (
+      !s.coverage_comparable_with_baseline &&
+      s.delta_vs_baseline.coverage_percentage_points !== null
+    ) {
+      throw new MathEngineError(
+        'MATH_ENGINE_INTEGRITY_ERROR',
+        502,
+        `Delta percentual de cobertura informado para universos incompatíveis na estratégia "${s.name}".`
+      );
+    }
+    if (
+      reqStrat?.maxBudgetCents !== undefined &&
+      reqStrat?.maxBudgetCents !== null &&
+      s.total_cost_cents !== null &&
+      BigInt(s.total_cost_cents) > BigInt(reqStrat.maxBudgetCents)
+    ) {
+      throw new MathEngineError(
+        'MATH_ENGINE_INTEGRITY_ERROR',
+        502,
+        `Estratégia "${s.name}" excedeu o teto orçamentário informado.`
       );
     }
     if (s.coverage.total_pool_subsets !== '0') {
@@ -897,8 +969,12 @@ export async function requestPythonCombinationsCoverage(params: {
   bets: number[][];
   targetSubsetSize: number;
   poolNumbers?: number[];
+  fixedNumbers?: number[];
+  excludedNumbers?: number[];
 }) {
   validateCombinatorialParams(params.universeSize, params.drawnCount, params.chosenCount);
+  const fixedNumbers = params.fixedNumbers ?? [];
+  const excludedNumbers = params.excludedNumbers ?? [];
   const data = await postPythonCombinationsEndpoint(
     '/v1/combinations/coverage',
     {
@@ -917,6 +993,8 @@ export async function requestPythonCombinationsCoverage(params: {
       })),
       bets: params.bets,
       target_subset_size: params.targetSubsetSize,
+      fixed_numbers: fixedNumbers,
+      excluded_numbers: excludedNumbers,
       ...(params.poolNumbers !== undefined ? { pool_numbers: params.poolNumbers } : {}),
     },
     pythonCoverageResponseSchema
@@ -930,6 +1008,8 @@ export async function requestPythonCombinationsCoverage(params: {
       chosenCount: params.chosenCount,
       targetSubsetSize: params.targetSubsetSize,
       submittedBetsCount: params.bets.length,
+      fixedNumbers,
+      excludedNumbers,
     },
     data
   );
@@ -1081,6 +1161,10 @@ export async function requestPythonCombinationsCompare(params: {
       universeSize: params.universeSize,
       drawnCount: params.drawnCount,
       strategiesCount: params.strategies.length,
+      strategies: params.strategies.map((s) => ({
+        maxBudgetCents: s.maxBudgetCents,
+        chosenCount: s.chosenCount,
+      })),
     },
     data
   );

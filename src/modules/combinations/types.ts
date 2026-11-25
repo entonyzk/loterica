@@ -207,6 +207,8 @@ export interface CombinationsCoverageResponse {
   drawn_count: number;
   chosen_count: number;
   target_subset_size: number;
+  fixed_numbers?: number[];
+  excluded_numbers?: number[];
   pool_size: number;
   pool_numbers: number[];
   submitted_bets_count: number;
@@ -287,6 +289,14 @@ export interface StrategyEvaluatedItem {
   method: string;
   is_exact_method: boolean;
   generation_classification: CombinationsGenerateResponse['method_classification'] | null;
+  restrictions: {
+    fixed_numbers: number[];
+    excluded_numbers: number[];
+    variable_count: number;
+    restricted_combinations: string;
+    pool_size: number;
+    pool_numbers: number[];
+  };
   bets_count: number;
   distinct_bets_count: number;
   repeated_bets_count: number;
@@ -307,6 +317,7 @@ export interface StrategyEvaluatedItem {
     coverage_fraction: string;
     is_full_coverage_proven: boolean;
   };
+  coverage_comparable_with_baseline: boolean;
   probabilities: {
     main_prize_exact: {
       raw_numerator: string;
@@ -345,6 +356,8 @@ export interface CombinationsCompareResponse {
   price_updated_at: string | null;
   price_source: string | null;
   strategies_count: number;
+  has_heterogeneous_universes: boolean;
+  universe_comparison_notice: string | null;
   strategies: StrategyEvaluatedItem[];
   axiom_notice: string;
   execution_source: 'python_fastapi_engine';
@@ -380,4 +393,168 @@ export function parseBetsInput(raw: string): number[][] {
         .filter(Boolean)
         .map((tok) => Number(tok))
     );
+}
+
+export function parseNumberListInput(
+  raw: string,
+  universeSize: number,
+  label: string
+): { numbers: number[]; errors: string[] } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { numbers: [], errors: [] };
+
+  const tokens = trimmed.split(/[\s,;.\-/]+/).filter(Boolean);
+  const errors: string[] = [];
+  const seen = new Set<number>();
+  const duplicates = new Set<number>();
+
+  for (const tok of tokens) {
+    if (!/^\d+$/.test(tok)) {
+      errors.push(`${label}: valor inválido "${tok}" (informe apenas inteiros).`);
+      continue;
+    }
+    const num = Number(tok);
+    if (!Number.isInteger(num) || num < 1 || num > universeSize) {
+      errors.push(`${label}: dezena ${num} fora do universo [1..${universeSize}].`);
+      continue;
+    }
+    if (seen.has(num)) {
+      duplicates.add(num);
+    } else {
+      seen.add(num);
+    }
+  }
+
+  if (duplicates.size > 0) {
+    errors.push(
+      `${label}: dezenas duplicadas (${Array.from(duplicates)
+        .sort((a, b) => a - b)
+        .join(', ')}).`
+    );
+  }
+
+  return {
+    numbers: Array.from(seen).sort((a, b) => a - b),
+    errors,
+  };
+}
+
+export interface BetValidationIssue {
+  betIndex: number;
+  reasons: string[];
+}
+
+export function validateBetsClient(params: {
+  rawText?: string;
+  explicitBets?: number[][];
+  chosenCount: number;
+  universeSize: number;
+  fixedNumbers: number[];
+  excludedNumbers: number[];
+}): {
+  validBets: number[][];
+  errors: BetValidationIssue[];
+  isEmpty: boolean;
+} {
+  const fixedSet = new Set(params.fixedNumbers);
+  const excludedSet = new Set(params.excludedNumbers);
+  const errors: BetValidationIssue[] = [];
+  const validBets: number[][] = [];
+
+  let candidateRows: Array<{ index: number; values: number[]; invalidTokens: string[] }> = [];
+
+  if (params.explicitBets !== undefined) {
+    candidateRows = params.explicitBets.map((bet, i) => ({
+      index: i + 1,
+      values: bet,
+      invalidTokens: [],
+    }));
+  } else {
+    const lines = (params.rawText ?? '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    candidateRows = lines.map((line, i) => {
+      const tokens = line.split(/[\s,;.\-/]+/).filter(Boolean);
+      const values: number[] = [];
+      const invalidTokens: string[] = [];
+      for (const tok of tokens) {
+        if (!/^\d+$/.test(tok)) {
+          invalidTokens.push(tok);
+        } else {
+          values.push(Number(tok));
+        }
+      }
+      return { index: i + 1, values, invalidTokens };
+    });
+  }
+
+  if (candidateRows.length === 0) {
+    return { validBets: [], errors: [], isEmpty: true };
+  }
+
+  for (const row of candidateRows) {
+    const reasons: string[] = [];
+
+    if (row.invalidTokens.length > 0) {
+      reasons.push(`valores não inteiros (${row.invalidTokens.join(', ')})`);
+    }
+
+    const totalNumbers = row.values.length + row.invalidTokens.length;
+    if (totalNumbers !== params.chosenCount) {
+      reasons.push(
+        `quantidade incorreta de dezenas (${totalNumbers} informadas, esperado ${params.chosenCount})`
+      );
+    }
+
+    const outOfRange = row.values.filter(
+      (n) => !Number.isInteger(n) || n < 1 || n > params.universeSize
+    );
+    if (outOfRange.length > 0) {
+      reasons.push(
+        `dezena(s) fora do universo [1..${params.universeSize}]: ${outOfRange.join(', ')}`
+      );
+    }
+
+    const seen = new Set<number>();
+    const repeated = new Set<number>();
+    for (const n of row.values) {
+      if (seen.has(n)) repeated.add(n);
+      seen.add(n);
+    }
+    if (repeated.size > 0) {
+      reasons.push(
+        `dezena(s) repetida(s): ${Array.from(repeated)
+          .sort((a, b) => a - b)
+          .join(', ')}`
+      );
+    }
+
+    const usedExcluded = Array.from(seen)
+      .filter((n) => excludedSet.has(n))
+      .sort((a, b) => a - b);
+    if (usedExcluded.length > 0) {
+      reasons.push(`contém dezena(s) excluída(s): ${usedExcluded.join(', ')}`);
+    }
+
+    const missingFixed = Array.from(fixedSet)
+      .filter((f) => !seen.has(f))
+      .sort((a, b) => a - b);
+    if (missingFixed.length > 0) {
+      reasons.push(`ausência de dezena(s) fixa(s) obrigatória(s): ${missingFixed.join(', ')}`);
+    }
+
+    if (reasons.length > 0) {
+      errors.push({ betIndex: row.index, reasons });
+    } else {
+      validBets.push(Array.from(seen).sort((a, b) => a - b));
+    }
+  }
+
+  return {
+    validBets: errors.length === 0 ? validBets : [],
+    errors,
+    isEmpty: false,
+  };
 }

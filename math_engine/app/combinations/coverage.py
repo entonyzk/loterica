@@ -38,46 +38,99 @@ def analyze_subset_coverage(
     bets: Sequence[Sequence[int]],
     target_subset_size: int,
     pool_numbers: Optional[Sequence[int]] = None,
+    fixed_numbers: Sequence[int] = (),
+    excluded_numbers: Sequence[int] = (),
 ) -> Dict[str, Any]:
     """
     Analisa a cobertura exata de subconjuntos de tamanho t (`target_subset_size`) sobre um pool ativo P.
+    Valida estritamente fixos, excluídos, universo, repetição e compatibilidade de todas as apostas antes de calcular.
     Nunca afirma cobertura integral (100%) sem comprovação exata (`uncovered == 0`).
     """
+    from .combinatorics_ops import validate_and_partition_constraints
+
     if not bets:
         raise ValueError("Informe ao menos 1 aposta para estudar a cobertura.")
     if len(bets) > 500:
         raise ValueError("Limite de 500 apostas por estudo de cobertura.")
+    if isinstance(target_subset_size, bool) or not isinstance(target_subset_size, int):
+        raise ValueError("target_subset_size deve ser inteiro.")
     if target_subset_size < 1 or target_subset_size > min(chosen_count, drawn_count):
         raise ValueError(
             f"target_subset_size={target_subset_size} deve estar entre 1 e min(chosen_count, drawn_count)={min(chosen_count, drawn_count)}."
         )
 
+    part = validate_and_partition_constraints(
+        universe_size=universe_size,
+        drawn_count=drawn_count,
+        chosen_count=chosen_count,
+        fixed_numbers=fixed_numbers,
+        excluded_numbers=excluded_numbers,
+    )
+    fixed_list = part["fixed_numbers"]
+    excluded_list = part["excluded_numbers"]
+    fixed_set = set(fixed_list)
+    excluded_set = set(excluded_list)
+
     if pool_numbers is not None:
+        for n in pool_numbers:
+            if isinstance(n, bool) or not isinstance(n, int):
+                raise ValueError("pool_numbers deve conter exclusivamente inteiros válidos.")
         pool = sorted(set(pool_numbers))
         if len(pool) != len(pool_numbers):
             raise ValueError("pool_numbers contém dezenas duplicadas.")
         for n in pool:
             if n < 1 or n > universe_size:
                 raise ValueError(f"Dezena {n} em pool_numbers fora do universo [1..{universe_size}].")
+        pool_set = set(pool)
+        excluded_in_pool = sorted(pool_set.intersection(excluded_set))
+        if excluded_in_pool:
+            raise ValueError(
+                f"pool_numbers contém dezenas excluídas ({excluded_in_pool}). O pool ativo deve ser compatível com U \\ E."
+            )
+        missing_fixed_in_pool = sorted(fixed_set - pool_set)
+        if missing_fixed_in_pool:
+            raise ValueError(
+                f"pool_numbers deve conter todas as dezenas fixas obrigatórias (ausentes: {missing_fixed_in_pool})."
+            )
     else:
-        pool = list(range(1, universe_size + 1))
+        pool = sorted(set(range(1, universe_size + 1)) - excluded_set)
+        pool_set = set(pool)
 
     if len(pool) < target_subset_size:
         raise ValueError(
             f"O pool selecionado ({len(pool)} dezenas) é menor que target_subset_size={target_subset_size}."
         )
 
-    pool_set = set(pool)
     normalized_bets: List[Tuple[int, ...]] = []
     for idx, b in enumerate(bets):
         if len(b) != chosen_count:
-            raise ValueError(f"Aposta #{idx + 1} deve ter {chosen_count} dezenas.")
+            raise ValueError(
+                f"Aposta #{idx + 1} deve ter exatamente {chosen_count} dezenas (recebidas: {len(b)})."
+            )
+        for n in b:
+            if isinstance(n, bool) or not isinstance(n, int):
+                raise ValueError(f"Aposta #{idx + 1} contém valor não inteiro.")
+            if n < 1 or n > universe_size:
+                raise ValueError(f"Dezena {n} na aposta #{idx + 1} fora do universo [1..{universe_size}].")
         uniq = sorted(set(b))
         if len(uniq) != chosen_count:
             raise ValueError(f"Aposta #{idx + 1} possui dezenas repetidas.")
-        for n in uniq:
-            if n < 1 or n > universe_size:
-                raise ValueError(f"Dezena {n} fora do universo [1..{universe_size}].")
+        bet_set = set(uniq)
+        used_excluded = sorted(bet_set.intersection(excluded_set))
+        if used_excluded:
+            raise ValueError(
+                f"Aposta #{idx + 1} contém dezenas excluídas ({used_excluded}) e é incompatível com o estudo de cobertura."
+            )
+        missing_fixed = sorted(fixed_set - bet_set)
+        if missing_fixed:
+            raise ValueError(
+                f"Aposta #{idx + 1} não contém as dezenas fixas obrigatórias ({missing_fixed})."
+            )
+        outside_pool = sorted(bet_set - pool_set)
+        if outside_pool:
+            raise ValueError(
+                f"Aposta #{idx + 1} contém dezenas fora do pool ativo P ({outside_pool})."
+            )
         normalized_bets.append(tuple(uniq))
 
     freq_bets = Counter(normalized_bets)
@@ -97,10 +150,8 @@ def analyze_subset_coverage(
 
     subset_hits: Counter[Tuple[int, ...]] = Counter()
     for bet in normalized_bets:
-        bet_in_pool = [n for n in bet if n in pool_set]
-        if len(bet_in_pool) >= target_subset_size:
-            for sub in combinations(bet_in_pool, target_subset_size):
-                subset_hits[sub] += 1
+        for sub in combinations(bet, target_subset_size):
+            subset_hits[sub] += 1
 
     covered_count = len(subset_hits)
     uncovered_count = total_pool_subsets - covered_count
@@ -150,6 +201,8 @@ def analyze_subset_coverage(
         "drawn_count": drawn_count,
         "chosen_count": chosen_count,
         "target_subset_size": target_subset_size,
+        "fixed_numbers": fixed_list,
+        "excluded_numbers": excluded_list,
         "pool_size": len(pool),
         "pool_numbers": pool,
         "submitted_bets_count": len(normalized_bets),

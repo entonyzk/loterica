@@ -84,6 +84,8 @@ const combinationsCoverageRequestSchema = modalityBaseSchema
     bets: z.array(z.array(z.number().int().min(1).max(1000)).min(1).max(100)).min(1).max(500),
     targetSubsetSize: z.number().int().min(1).max(100),
     poolNumbers: z.array(z.number().int().min(1).max(1000)).optional(),
+    fixedNumbers: z.array(z.number().int().min(1).max(1000)).default([]),
+    excludedNumbers: z.array(z.number().int().min(1).max(1000)).default([]),
   })
   .strict();
 
@@ -498,6 +500,8 @@ export function createMathRouter(
           bets: payload.bets,
           targetSubsetSize: payload.targetSubsetSize,
           poolNumbers: payload.poolNumbers,
+          fixedNumbers: payload.fixedNumbers,
+          excludedNumbers: payload.excludedNumbers,
         });
         return res.json({
           ...result,
